@@ -9,7 +9,8 @@ index) as a record. Fixes should reference the bug id in the commit message.
 | [BUG-002](#bug-002) | Assistant can't check what's on the canvas mid-session (stale picture) | High | ✅ Resolved |
 | [BUG-003](#bug-003) | Assistant can't clear the canvas ("clear everything" does nothing) | High | ✅ Resolved |
 | [BUG-004](#bug-004) | Assistant calls a visibly populated board "blank" after app restart | High | ✅ Resolved |
-| [BUG-005](#bug-005) | Silences around look_at_item; session may stall after | Medium | 🔍 Investigating (mitigated) |
+| [BUG-005](#bug-005) | Silences around look_at_item; session may stall after | Medium | ✅ Resolved (superseded by delegated vision, LL-013) |
+| [BUG-006](#bug-006) | Busy board: "image too large", hand-drawn sketch unreadable | High | ✅ Resolved |
 
 ---
 
@@ -288,3 +289,32 @@ On the deployed site (same browser profile as the PWA), run in the console:
 - Minor tic observed twice: the model answers correctly, then says "oh wait,
   my mistake" and repeats the same correct answer — likely over-triggering of
   the anti-confabulation instruction; cosmetic, watching.
+
+---
+
+## BUG-006
+
+**On a busy board, "the image was too large" — and a hand-drawn sketch couldn't be seen at all**
+
+- **Severity:** High (user drew a smiley next to three screenshots; the model
+  could read the screenshots but was blind to the drawing)
+- **Status:** ✅ Resolved — 2026-07-02
+- **Reported:** 2026-07-02 (live session screenshot)
+
+### Root cause (two, compounding)
+1. Asking "can you see what I drew?" routed to `capture_canvas` (whole board),
+   whose export grows with content; on an image-heavy board it exceeded the
+   channel guard, which correctly refused to send it — honest, but blind.
+2. A hand-drawn figure is MANY freedraw strokes; `look_at_item`'s resolver saw
+   them as ambiguous candidates rather than one drawing.
+
+### Resolution
+1. `capture_canvas` output now auto-fits the channel budget
+   (`src/lib/imageBudget.ts`, ~220K chars max, JPEG stepdown) — a board of any
+   size can always photograph itself; layout checking doesn't need full res.
+2. `look_at_item`: when every ambiguous match is hand-drawn, the strokes are
+   exported TOGETHER as one image and read via the delegated HTTP path
+   (LL-013). Instructions route "what did I draw?" to it explicitly.
+3. Verified live on a replica of the reported board (2 heavy images + 4-stroke
+   smiley): capture fits at 87K; the model answered "It's a hand-drawn smiley
+   face."

@@ -22,6 +22,7 @@ import {
 import { snapshotBeforeClear, wipeBoard, restoreLastClear } from './canvas/clearScene'
 import { lookAtItem } from './canvas/zoomItem'
 import { preReadImage } from './canvas/annotateImage'
+import { fitChannelBudget } from './lib/imageBudget'
 import { ConversationPanel } from './ui/ConversationPanel'
 import { MockAssistantProvider } from './assistant/mockProvider'
 import { RealtimeClient, type RealtimeStatus } from './realtime/RealtimeClient'
@@ -260,7 +261,9 @@ export function App() {
         mimeType: 'image/png',
         exportPadding: 32,
       })
-      const image = await blobToDataUrl(blob)
+      // Whole-board captures grow with content; shrink to the channel budget
+      // so a busy board can always photograph itself (layout needs no full res).
+      const image = await fitChannelBudget(await blobToDataUrl(blob))
       return { ok: true, image }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }

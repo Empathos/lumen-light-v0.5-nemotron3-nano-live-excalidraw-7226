@@ -50,6 +50,37 @@ export async function lookAtItem(
     }
   }
   if ('ambiguous' in hit) {
+    // A hand-drawn figure is many strokes: when every match is hand-drawn,
+    // they ARE one drawing — export them together and read them as one image.
+    if (hit.ambiguous.every((n) => n.kind === 'unknown')) {
+      const ids = new Set(hit.ambiguous.map((n) => n.id))
+      const strokes = api.getSceneElements().filter((e) => ids.has(e.id))
+      try {
+        const blob = await exportToBlob({
+          elements: strokes,
+          appState: { theme: 'light', exportBackground: true, viewBackgroundColor: '#ffffff' },
+          files: api.getFiles(),
+          mimeType: 'image/png',
+          exportPadding: 24,
+          getDimensions: (w: number, h: number) => {
+            const scale = Math.min(3, Math.max(1, 900 / Math.max(w, h)))
+            return { width: Math.round(w * scale), height: Math.round(h * scale), scale }
+          },
+        })
+        const dataURL = await new Promise<string>((resolve, reject) => {
+          const r = new FileReader()
+          r.onload = () => resolve(String(r.result))
+          r.onerror = () => reject(new Error('read failed'))
+          r.readAsDataURL(blob)
+        })
+        return {
+          looking_at: `the hand-drawn sketch (${strokes.length} strokes)`,
+          ...(await delegateLook(dataURL, question)),
+        }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
+    }
     return {
       ok: false,
       error: 'more than one item matches',
