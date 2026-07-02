@@ -8,12 +8,9 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       lumenRealtimePlugin({
-        apiKey: env.INWORLD_API_KEY,
-        model: env.INWORLD_REALTIME_MODEL,
-        voice: env.INWORLD_REALTIME_VOICE,
-        sttModel: env.INWORLD_STT_MODEL,
-        ttsModel: env.INWORLD_TTS_MODEL,
         geminiApiKey: env.GEMINI_API_KEY,
+        liveModel: env.GEMINI_LIVE_MODEL,
+        liveVoice: env.GEMINI_LIVE_VOICE,
         imageModel: env.GEMINI_IMAGE_MODEL,
         tavilyApiKey: env.TAVILY_API_KEY,
         braveApiKey: env.BRAVE_API_KEY,

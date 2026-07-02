@@ -2,9 +2,7 @@ import type { Plugin, Connect } from 'vite'
 import type { ServerResponse } from 'node:http'
 import {
   type RealtimeEnv,
-  buildSession,
-  getIceServers,
-  createCall,
+  createLiveToken,
   generateImage,
   describeImage,
   runWebSearch,
@@ -17,9 +15,7 @@ import {
  * Functions used in production); this file only wires it to Vite's Connect
  * middleware. The API keys NEVER leave the server.
  *
- *   GET  /api/realtime/ice      -> Inworld ice-servers
- *   GET  /api/realtime/session  -> session config (client applies via session.update)
- *   POST /api/realtime/call     -> Inworld calls (SDP offer -> answer)
+ *   GET  /api/live/token        -> ephemeral Gemini Live token + session setup
  *   POST /api/image/generate    -> Gemini image generation
  *   POST /api/image/describe    -> Gemini vision pre-read (LL-012)
  *   POST /api/search            -> web search (Tavily/Brave)
@@ -32,12 +28,6 @@ function sendJson(res: ServerResponse, status: number, payload: unknown) {
   res.statusCode = status
   res.setHeader('content-type', 'application/json')
   res.end(JSON.stringify(payload))
-}
-
-function sendText(res: ServerResponse, status: number, text: string) {
-  res.statusCode = status
-  res.setHeader('content-type', 'application/json')
-  res.end(text)
 }
 
 function readBody(req: Connect.IncomingMessage): Promise<string> {
@@ -55,39 +45,14 @@ export function lumenRealtimePlugin(env: RealtimeEnv): Plugin {
   return {
     name: 'lumen-realtime',
     configureServer(server) {
+      // Mints a short-lived single-use token and returns it with the session
+      // setup; the browser connects straight to Google with it (ADR-0013).
       server.middlewares.use(
-        '/api/realtime/ice',
+        '/api/live/token',
         async (_req: Connect.IncomingMessage, res: ServerResponse) => {
           try {
-            const { status, text } = await getIceServers(env)
-            sendText(res, status, text)
-          } catch (err) {
-            sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) })
-          }
-        },
-      )
-
-      // The client applies this via session.update the moment the data channel
-      // opens (Inworld starts every call with DEFAULT config). No secret here.
-      server.middlewares.use(
-        '/api/realtime/session',
-        (_req: Connect.IncomingMessage, res: ServerResponse) => {
-          sendJson(res, 200, buildSession(env))
-        },
-      )
-
-      server.middlewares.use(
-        '/api/realtime/call',
-        async (req: Connect.IncomingMessage, res: ServerResponse) => {
-          try {
-            const body = await readBody(req)
-            const { sdp } = JSON.parse(body || '{}') as { sdp?: string }
-            if (!sdp) {
-              sendJson(res, 400, { error: 'Missing sdp offer in request body.' })
-              return
-            }
-            const { status, text } = await createCall(env, sdp)
-            sendText(res, status, text)
+            const { status, body } = await createLiveToken(env)
+            sendJson(res, status, body)
           } catch (err) {
             sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) })
           }

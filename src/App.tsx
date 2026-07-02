@@ -338,7 +338,8 @@ export function App() {
     w.__lumenReadCanvas = () => readCanvas()
     w.__lumenClearCanvas = (opts?: { confirmed?: boolean; restore?: boolean }) =>
       clearCanvas(opts ?? {})
-    // GAP-001 spike: does Inworld accept a REMOTE image_url? Needs a live session.
+    // Inject an image into the live session (inline base64 per GAP-001; remote
+    // URLs are fetched browser-side first). Needs a live session.
     w.__lumenInjectImage = (url: string, text?: string) =>
       clientRef.current?.injectImage(url, text) ?? false
     w.__lumenLookAt = (target: string, question?: string) => lookAtItemFromArgs({ target, question })

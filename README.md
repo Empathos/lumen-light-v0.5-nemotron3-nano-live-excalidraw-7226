@@ -25,15 +25,17 @@ See [`PRD.md`](./PRD.md) for the product vision and scope.
 
 ## Status
 
-Branch `v0.5-inworld-62426-excalidraw`. Working today:
+Branch `v0.5-gemini-live-7226` (Gemini Live split of the Inworld
+excalidraw webdemo, see [ADR-0013](./docs/decisions/ADR-0013-gemini-live-provider.md)).
+Working today:
 
 - **Excalidraw canvas** as the main surface, in **dark mode by default**, with the
   scene (drawings, images, briefing window) **persisted to localStorage** so it
   survives a refresh or back-navigation.
-- **Inworld Realtime voice + text session** over WebRTC, where the model calls
-  Lumen's tools to diagram the conversation live. The "brain" is an Inworld
-  **router** (advanced model + fallback); the voice is Inworld's `inworld-tts-2`
-  with `semantic_vad`.
+- **Gemini Live voice + text session** over WebSocket, where the model calls
+  Lumen's tools to diagram the conversation live. Brain and voice are one
+  **native-audio model** (`gemini-2.5-flash-native-audio-latest`); the browser
+  connects directly to Google with a server-minted **ephemeral token**.
 - **An offline fallback**: with no live session, typed text uses a deterministic
   local parser so the app is useful with no keys/network.
 - **Generated images on the canvas (`generate_image`)** — the agent generates a
@@ -77,35 +79,28 @@ cp .env.local.example .env.local
 ```
 
 ```bash
-# Required for the live voice/text collaborator:
-INWORLD_API_KEY=your-inworld-api-key
-INWORLD_REALTIME_MODEL=inworld/lumen-router   # a router id (see below)
-INWORLD_REALTIME_VOICE=Sarah
+# Required for the live voice/text collaborator AND generate_image/vision:
+GEMINI_API_KEY=your-gemini-api-key            # https://aistudio.google.com/apikey
+
+# Optional live-session overrides (defaults in code):
+# GEMINI_LIVE_MODEL=gemini-2.5-flash-native-audio-latest
+# GEMINI_LIVE_VOICE=Aoede
 
 # Optional — each one unlocks a tool; omit to disable that tool:
-GEMINI_API_KEY=your-gemini-api-key            # generate_image ("Nano Banana")
 TAVILY_API_KEY=your-tavily-api-key            # web_search (preferred)
 # BRAVE_API_KEY=your-brave-api-key            # web_search (fallback)
 THUM_IO_KEY=your-thum-io-key                  # screenshot_website
 ```
 
-Create the router the model uses as its brain (one advanced model + a fallback):
-
-```bash
-INWORLD_API_KEY=... ./scripts/create-inworld-router.sh
-# override defaults if you like:
-#   ROUTER_NAME=lumen-router PRIMARY_MODEL=... FALLBACK_MODEL=... \
-#   INWORLD_API_KEY=... ./scripts/create-inworld-router.sh
-```
-
-Or create it in the Inworld Portal (Routers → new router) and copy its
-`inworld/<name>` id into `INWORLD_REALTIME_MODEL`. The Inworld key is required for
-the live collaborator; the offline parser works without any keys.
+The Gemini key is required for the live collaborator; the offline parser works
+without any keys.
 
 > Security: every key is used **only** by the server side (the Vite dev
-> middleware locally, or the Netlify Functions in production), which proxies the
-> calls to Inworld / Gemini / the search + screenshot providers. Keys never reach
-> the browser. Never commit `.env.local`.
+> middleware locally, or the Netlify Functions in production). The browser never
+> sees the API key — for the live session it receives a short-lived, single-use
+> **ephemeral token** minted server-side
+> ([ADR-0013](./docs/decisions/ADR-0013-gemini-live-provider.md)); everything
+> else is proxied. Never commit `.env.local`.
 
 ## Run it
 
@@ -186,33 +181,34 @@ the same tool calls, which are projected onto the canvas:
 
 ```text
 voice (mic) ─┐                                ┌─► draw_canvas / draw_flow ─┐
-             ├─► Inworld Realtime session ────┤  generate_image / screenshot │
-text (live) ─┘  (router brain + inworld-tts)  ├─► open_document / web_search ├─► canvas
+             ├─► Gemini Live session ─────────┤  generate_image / screenshot │
+text (live) ─┘  (native-audio, WebSocket)     ├─► open_document / web_search ├─► canvas
                                               └─► spoken/text reply          ┘  (Excalidraw)
 
 text (offline) ─► MockAssistantProvider ──────► draw_flow ─────────────────────► canvas
 ```
 
-Inworld speaks the OpenAI Realtime protocol (data channel `oai-events`, same
-events), so only the connection + session-config layer is Inworld-specific.
+The session speaks Gemini's `BidiGenerateContent` protocol (`setup` /
+`realtimeInput` / `toolCall` / `toolResponse` / `serverContent`); only the
+connection + session-config layer is provider-specific.
 
 Server logic lives in `server/backend.ts` (framework-agnostic) and is wired two
 ways:
 
 - **Dev:** `server/realtimePlugin.ts` — Vite dev-server middleware exposing
-  `/api/realtime/{ice,session,call}`, `/api/image/generate`, `/api/search`, and
+  `/api/live/token`, `/api/image/generate`, `/api/search`, and
   `/api/screenshot`. Holds the keys; they never reach the browser. See
-  [ADR-0007](./docs/decisions/ADR-0007-inworld-realtime-provider.md).
+  [ADR-0013](./docs/decisions/ADR-0013-gemini-live-provider.md).
 - **Production:** `netlify/functions/*.mts` — the same `backend.ts` logic exposed
   as Netlify Functions at the identical `/api/...` paths.
 
 Client:
 
-- `src/realtime/RealtimeClient.ts` — fetches ICE servers, opens the WebRTC peer
-  connection (mic capture, model audio playback, data channel), does the proxied
-  SDP exchange, and handles function calls
-  (`response.function_call_arguments.done` → run tool → `function_call_output`
-  → `response.create`).
+- `src/realtime/RealtimeClient.ts` — fetches an ephemeral token + session setup,
+  opens the WebSocket to Google, streams mic PCM16 up (AudioWorklet, 16 kHz) and
+  plays model PCM16 down (24 kHz, gapless, flushed on barge-in), and handles
+  function calls (`toolCall` → run tool → `toolResponse`, with tool images
+  delivered as inline base64 `clientContent`).
 - `src/canvas/drawCanvas.ts` / `drawFlow.ts` — project tool args onto Excalidraw
   elements. `normalizeFlow.ts` / `normalizeCanvasElements` defensively coerce
   tool-call args into valid scenes before touching the canvas.

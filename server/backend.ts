@@ -9,18 +9,18 @@
  * inputs/outputs, so it can run in any Node 18+ runtime.
  */
 
+import { GoogleGenAI } from '@google/genai'
+
 export interface RealtimeEnv {
-  apiKey?: string
-  /** Inworld router id (preferred) or concrete model id for session.model. */
-  model?: string
-  /** Inworld voice name for TTS output. */
-  voice?: string
-  /** STT model id; defaults to inworld/inworld-stt-1. */
-  sttModel?: string
-  /** TTS model id; defaults to inworld-tts-2. */
-  ttsModel?: string
-  /** Google Gemini API key for the generate_image tool. Used server-side only. */
+  /**
+   * Google Gemini API key — powers the Live voice session (via ephemeral
+   * tokens, ADR-0013) AND the generate_image / describe tools. Server-side only.
+   */
   geminiApiKey?: string
+  /** Gemini Live model id; defaults to gemini-2.5-flash-native-audio-latest. */
+  liveModel?: string
+  /** Prebuilt Gemini voice name for audio output; defaults to Aoede. */
+  liveVoice?: string
   /** Gemini image model ("Nano Banana"); defaults to gemini-2.5-flash-image. */
   imageModel?: string
   /** Tavily API key for the web_search tool (preferred). Server-side only. */
@@ -35,20 +35,15 @@ export interface RealtimeEnv {
 export function readEnv(): RealtimeEnv {
   const e = process.env
   return {
-    apiKey: e.INWORLD_API_KEY,
-    model: e.INWORLD_REALTIME_MODEL,
-    voice: e.INWORLD_REALTIME_VOICE,
-    sttModel: e.INWORLD_STT_MODEL,
-    ttsModel: e.INWORLD_TTS_MODEL,
     geminiApiKey: e.GEMINI_API_KEY,
+    liveModel: e.GEMINI_LIVE_MODEL,
+    liveVoice: e.GEMINI_LIVE_VOICE,
     imageModel: e.GEMINI_IMAGE_MODEL,
     tavilyApiKey: e.TAVILY_API_KEY,
     braveApiKey: e.BRAVE_API_KEY,
     thumApiKey: e.THUM_IO_KEY,
   }
 }
-
-const INWORLD_BASE = 'https://api.inworld.ai/v1/realtime'
 
 const INSTRUCTIONS = `You are Lumen, a thinking-canvas collaborator.
 
@@ -180,17 +175,12 @@ TURN LENGTH: short by default — usually 5 to 12 words. A quick acknowledgement
 when the user asks you to explain or walk through something. Never read the
 diagram aloud element-by-element.
 
-NON-VERBALS — six bracketed sounds the voice can actually produce: [laugh],
-[breathe], [sigh], [cough], [clear throat], [yawn]. Use only where a person
-would really make that sound. At most one per turn, usually none.
-
-STEERING TAGS — at most ONE [speak ...] tag per turn, and if used it MUST be the
-very first thing in the turn. Use it only when the emotional register shifts:
-- user excited / good news → [speak with bright energy, faster, warmer]
-- user frustrated → [speak evenly, slower, lower volume, no defensiveness]
-- user vulnerable or paused on something hard → [speak softly, slower, with warmth]
-Default is no tag; let tone carry through word choice and rhythm. Once you shift
-manner, keep it across turns without re-tagging.
+TONE SHIFTS — match the user's emotional register and let it carry through
+your delivery, never announcing it:
+- user excited / good news → brighter, a touch quicker, warmer
+- user frustrated → even, slower, lower, no defensiveness
+- user vulnerable or paused on something hard → softer, slower, with warmth
+Once you shift manner, keep it across turns until the mood changes.
 
 SMALL DISFLUENCIES — sprinkle lightly, often none: fillers ("um", "uh", "hmm"),
 soft openers ("oh", "well", "so", "okay"), hedges ("kind of", "maybe"),
@@ -200,8 +190,7 @@ LANGUAGE: always speak English. Speech-to-text sometimes inserts stray
 non-English characters (often Chinese/CJK) during silence or noise — treat any
 such fragment as a transcription glitch, ignore it, and keep replying in English.
 Switch languages ONLY if the user clearly and explicitly asks you to (e.g. "let's
-speak Spanish"); never switch because of a single odd word or symbol. Steering
-tags, non-verbals, and stage directions are always in English regardless.`
+speak Spanish"); never switch because of a single odd word or symbol.`
 
 const DRAW_FLOW_TOOL = {
   type: 'function',
@@ -510,96 +499,144 @@ const SCREENSHOT_WEBSITE_TOOL = {
   },
 }
 
-/** The session config attached to every Inworld call (model, voice, tools). */
-export function buildSession(env: RealtimeEnv) {
+// ---------------------------------------------------------------------------
+// Gemini Live session (ADR-0013, LL-014)
+// ---------------------------------------------------------------------------
+
+type JsonSchema = Record<string, unknown>
+
+/**
+ * Convert one of the OpenAI-Realtime-style tool schemas above into a Gemini
+ * function-declaration Schema: `additionalProperties` is not part of Gemini's
+ * OpenAPI subset (setup is rejected if present), and `type` values are the
+ * protobuf enum names, which are uppercase.
+ */
+function toGeminiSchema(schema: JsonSchema): JsonSchema {
+  const out: JsonSchema = {}
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === 'additionalProperties') continue
+    if (key === 'type' && typeof value === 'string') {
+      out.type = value.toUpperCase()
+    } else if (key === 'properties' && value && typeof value === 'object') {
+      out.properties = Object.fromEntries(
+        Object.entries(value as Record<string, JsonSchema>).map(([name, sub]) => [
+          name,
+          toGeminiSchema(sub),
+        ]),
+      )
+    } else if (key === 'items' && value && typeof value === 'object') {
+      out.items = toGeminiSchema(value as JsonSchema)
+    } else {
+      out[key] = value
+    }
+  }
+  return out
+}
+
+function toFunctionDeclaration(tool: {
+  name: string
+  description: string
+  parameters: { properties?: Record<string, unknown> }
+}) {
+  const params = tool.parameters
+  // No-arg tools (capture_canvas, read_canvas, read_document) must omit
+  // `parameters` entirely — an OBJECT schema with zero properties is rejected.
+  const hasProps = params.properties && Object.keys(params.properties).length > 0
   return {
-    type: 'realtime',
-    model: env.model || 'inworld/lumen-router',
-    instructions: INSTRUCTIONS,
-    output_modalities: ['audio', 'text'],
-    // Gemini "flash"/"pro" tiers are reasoning models: left to think, they burn
-    // their token budget silently and reply tersely or not at all (= "no audio
-    // reply" in voice) and add latency. For realtime we want direct answers, so
-    // disable chain-of-thought. Raise this (LOW/MEDIUM) for deeper, slower turns.
-    text_generation_config: { reasoning: { effort: 'NONE' } },
-    // A little sampling variety makes phrasing feel less templated.
-    temperature: 0.8,
-    audio: {
-      input: {
-        transcription: { model: env.sttModel || 'inworld/inworld-stt-1' },
-        // eagerness 'low' tolerates natural pauses instead of cutting the user
-        // off and superseding the reply mid-sentence.
-        turn_detection: { type: 'semantic_vad', eagerness: 'low' },
-      },
-      output: {
-        model: env.ttsModel || 'inworld-tts-2',
-        voice: env.voice || 'Sarah',
-        speed: 1.0,
+    name: tool.name,
+    description: tool.description,
+    ...(hasProps ? { parameters: toGeminiSchema(params as JsonSchema) } : {}),
+  }
+}
+
+/**
+ * The BidiGenerateContentSetup sent as the first WebSocket message of every
+ * Live session. Built server-side (single source of truth, same as the old
+ * session config) and handed to the client alongside the ephemeral token.
+ */
+export function buildLiveSetup(env: RealtimeEnv) {
+  return {
+    // NOTE: Developer-API model ids, not the Vertex ones — list what your key
+    // can use with GET /v1beta/models and filter for bidiGenerateContent.
+    model: `models/${env.liveModel || 'gemini-2.5-flash-native-audio-latest'}`,
+    generationConfig: {
+      responseModalities: ['AUDIO'],
+      // A little sampling variety makes phrasing feel less templated.
+      temperature: 0.8,
+      speechConfig: {
+        voiceConfig: { prebuiltVoiceConfig: { voiceName: env.liveVoice || 'Aoede' } },
+        languageCode: 'en-US',
       },
     },
-    // This is the demo's "naturalness" recipe (inworld.ai realtime demo):
-    // CREATIVE delivery is the expressive TTS-2 preset (STABLE/BALANCED flatten
-    // prosody); full_turn buffers the whole turn for best intonation; emit_once
-    // is the recommended steering handling for TTS-2; responsiveness fillers
-    // cover LLM warmup and play on the normal audio track. backchannel emits
-    // "mm-hm"/"right" while the user is still speaking — its audio arrives as
-    // base64 PCM on the data channel and is played client-side (RealtimeClient).
-    providerData: {
-      tts: {
-        delivery_mode: 'CREATIVE',
-        segmenter_strategy: 'full_turn',
-        steering_handling: 'emit_once',
-      },
-      responsiveness: { enabled: true },
-      backchannel: { enabled: true },
-    },
+    systemInstruction: { parts: [{ text: INSTRUCTIONS }] },
     tools: [
-      DRAW_CANVAS_TOOL,
-      DRAW_FLOW_TOOL,
-      CAPTURE_CANVAS_TOOL,
-      READ_CANVAS_TOOL,
-      LOOK_AT_ITEM_TOOL,
-      CLEAR_CANVAS_TOOL,
-      GENERATE_IMAGE_TOOL,
-      OPEN_DOCUMENT_TOOL,
-      HIGHLIGHT_PASSAGE_TOOL,
-      READ_DOCUMENT_TOOL,
-      BRIEF_FROM_CANVAS_TOOL,
-      WEB_SEARCH_TOOL,
-      SCREENSHOT_WEBSITE_TOOL,
+      {
+        functionDeclarations: [
+          DRAW_CANVAS_TOOL,
+          DRAW_FLOW_TOOL,
+          CAPTURE_CANVAS_TOOL,
+          READ_CANVAS_TOOL,
+          LOOK_AT_ITEM_TOOL,
+          CLEAR_CANVAS_TOOL,
+          GENERATE_IMAGE_TOOL,
+          OPEN_DOCUMENT_TOOL,
+          HIGHLIGHT_PASSAGE_TOOL,
+          READ_DOCUMENT_TOOL,
+          BRIEF_FROM_CANVAS_TOOL,
+          WEB_SEARCH_TOOL,
+          SCREENSHOT_WEBSITE_TOOL,
+        ].map(toFunctionDeclaration),
+      },
     ],
-    tool_choice: 'auto',
-  }
-}
-
-/** GET Inworld ICE/STUN/TURN config. Returns the raw passthrough response. */
-export async function getIceServers(env: RealtimeEnv): Promise<{ status: number; text: string }> {
-  if (!env.apiKey) {
-    return { status: 500, text: JSON.stringify({ error: 'INWORLD_API_KEY is not set.' }) }
-  }
-  const r = await fetch(`${INWORLD_BASE}/ice-servers`, {
-    headers: { Authorization: `Bearer ${env.apiKey}` },
-  })
-  return { status: r.status, text: await r.text() }
-}
-
-/** POST an SDP offer to Inworld with the session config; return the SDP answer. */
-export async function createCall(
-  env: RealtimeEnv,
-  sdp: string,
-): Promise<{ status: number; text: string }> {
-  if (!env.apiKey) {
-    return { status: 500, text: JSON.stringify({ error: 'INWORLD_API_KEY is not set.' }) }
-  }
-  const r = await fetch(`${INWORLD_BASE}/calls`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.apiKey}`,
-      'Content-Type': 'application/json',
+    // Transcripts of both sides come from the session itself — no separate STT.
+    inputAudioTranscription: {},
+    outputAudioTranscription: {},
+    realtimeInputConfig: {
+      // Tolerate natural pauses instead of cutting the user off mid-thought
+      // (the Gemini equivalent of Inworld's semantic_vad eagerness 'low').
+      automaticActivityDetection: {
+        endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
+        silenceDurationMs: 800,
+      },
     },
-    body: JSON.stringify({ sdp, session: buildSession(env) }),
-  })
-  return { status: r.status, text: await r.text() }
+    // Without compression, native-audio sessions hit the context ceiling in
+    // ~15 minutes of audio; the sliding window keeps long sessions alive.
+    contextWindowCompression: { slidingWindow: {} },
+  }
+}
+
+/**
+ * Mint an ephemeral Live API token (single use, short start window) and return
+ * it together with the session setup. The browser connects straight to Google
+ * with the token — the API key never leaves the server (ADR-0013).
+ */
+export async function createLiveToken(env: RealtimeEnv): Promise<{
+  status: number
+  body: { accessToken?: string; setup?: Record<string, unknown>; error?: string }
+}> {
+  if (!env.geminiApiKey) {
+    return { status: 500, body: { error: 'GEMINI_API_KEY is not set.' } }
+  }
+  try {
+    // Ephemeral tokens are a v1alpha-only surface.
+    const ai = new GoogleGenAI({
+      apiKey: env.geminiApiKey,
+      httpOptions: { apiVersion: 'v1alpha' },
+    })
+    const token = await ai.authTokens.create({
+      config: {
+        uses: 1,
+        expireTime: new Date(Date.now() + 30 * 60_000).toISOString(),
+        newSessionExpireTime: new Date(Date.now() + 60_000).toISOString(),
+      },
+    })
+    if (!token.name) {
+      return { status: 502, body: { error: 'Token mint returned no token name.' } }
+    }
+    return { status: 200, body: { accessToken: token.name, setup: buildLiveSetup(env) } }
+  } catch (err) {
+    return { status: 502, body: { error: err instanceof Error ? err.message : String(err) } }
+  }
 }
 
 /** generate_image backend: prompt -> Google Gemini ("Nano Banana") -> data URL. */
