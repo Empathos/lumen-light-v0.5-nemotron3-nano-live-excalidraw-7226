@@ -6,6 +6,7 @@ import {
   getIceServers,
   createCall,
   generateImage,
+  describeImage,
   runWebSearch,
   screenshotWebsite,
 } from './backend'
@@ -20,6 +21,7 @@ import {
  *   GET  /api/realtime/session  -> session config (client applies via session.update)
  *   POST /api/realtime/call     -> Inworld calls (SDP offer -> answer)
  *   POST /api/image/generate    -> Gemini image generation
+ *   POST /api/image/describe    -> Gemini vision pre-read (LL-012)
  *   POST /api/search            -> web search (Tavily/Brave)
  *   POST /api/screenshot        -> website screenshot (thum.io)
  */
@@ -110,6 +112,28 @@ export function lumenRealtimePlugin(env: RealtimeEnv): Plugin {
               return
             }
             const { status, body: out } = await generateImage(env, prompt, aspect)
+            sendJson(res, status, out)
+          } catch (err) {
+            sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) })
+          }
+        },
+      )
+
+      server.middlewares.use(
+        '/api/image/describe',
+        async (req: Connect.IncomingMessage, res: ServerResponse) => {
+          if (req.method !== 'POST') {
+            sendJson(res, 405, { error: 'Use POST.' })
+            return
+          }
+          try {
+            const body = await readBody(req)
+            const { dataURL } = JSON.parse(body || '{}') as { dataURL?: string }
+            if (!dataURL || typeof dataURL !== 'string') {
+              sendJson(res, 400, { error: 'Missing dataURL.' })
+              return
+            }
+            const { status, body: out } = await describeImage(env, dataURL)
             sendJson(res, status, out)
           } catch (err) {
             sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) })

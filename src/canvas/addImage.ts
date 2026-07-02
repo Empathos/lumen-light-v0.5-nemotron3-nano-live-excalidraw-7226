@@ -40,7 +40,7 @@ export async function addImageToCanvas(
   api: ExcalidrawImperativeAPI,
   dataURL: string,
   opts?: { x?: number; y?: number; meta?: LumenImageMeta },
-): Promise<{ width: number; height: number }> {
+): Promise<{ width: number; height: number; id?: string }> {
   const { w, h } = await naturalSize(dataURL)
   const scale = Math.min(1, MAX_DIM / Math.max(w, h))
   const width = Math.round(w * scale)
@@ -88,5 +88,5 @@ export async function addImageToCanvas(
   api.updateScene({ elements: [...existing, ...created] })
   api.scrollToContent(created, { fitToContent: true, animate: true, duration: 250 })
 
-  return { width, height }
+  return { width, height, id: created[0]?.id }
 }

@@ -124,8 +124,14 @@ how much of the board is on their screen. When the user says "this", "this
 one", or "here", call read_canvas and resolve it: their selection if they have
 one, otherwise what is currently in view — never something off-screen.
 
-When you need to READ what is inside one image — a website screenshot's
-headlines, text in a picture — do NOT squint at capture_canvas: call
+Images are PRE-READ when they land on the board: read_canvas includes a short
+literal note of what each image contains (its main text/headline). Answer
+quick "what does it say/show?" questions straight from that note — instantly,
+no tool pause. When the user needs MORE than the note covers (a specific
+corner, a small date, details the note doesn't mention), call look_at_item.
+
+When you need to READ what is inside one image beyond its pre-read note — do
+NOT squint at capture_canvas: call
 look_at_item with that item as the target. It returns the original
 full-resolution pixels of just that item. capture_canvas is for overall
 layout; look_at_item is for reading one thing closely.
@@ -588,6 +594,50 @@ export async function createCall(
 }
 
 /** generate_image backend: prompt -> Google Gemini ("Nano Banana") -> data URL. */
+/**
+ * Pre-read an image (IDEA-010 → LL-012): literal 2-3 sentence description plus
+ * a transcription of the most prominent readable text. Runs server-side over
+ * HTTP at placement time, so answers about image contents become instant text
+ * — no image ever crosses the data channel at question time.
+ */
+export async function describeImage(
+  env: RealtimeEnv,
+  dataURL: string,
+): Promise<{ status: number; body: { description?: string; error?: string } }> {
+  if (!env.geminiApiKey) return { status: 500, body: { error: 'GEMINI_API_KEY is not set.' } }
+  const m = dataURL.match(/^data:(image\/[\w+.-]+);base64,(.+)$/)
+  if (!m) return { status: 400, body: { error: 'expected a base64 image data URL' } }
+  const model = 'gemini-2.5-flash'
+  const r = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+    {
+      method: 'POST',
+      headers: { 'x-goog-api-key': env.geminiApiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              { inlineData: { mimeType: m[1], data: m[2] } },
+              {
+                text:
+                  'TRANSCRIBE FIRST: quote the main headline/title and the 2-3 most prominent readable text items exactly as written (section names, visible dates). THEN one short literal sentence on what the image shows. If some text is unreadable, say which. No speculation, no generic layout talk. Max 90 words.',
+              },
+            ],
+          },
+        ],
+      }),
+    },
+  )
+  const data = (await r.json()) as {
+    candidates?: { content?: { parts?: { text?: string }[] } }[]
+    error?: { message?: string }
+  }
+  if (!r.ok) return { status: r.status, body: { error: data?.error?.message || 'describe failed' } }
+  const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join(' ').trim()
+  if (!text) return { status: 502, body: { error: 'no description returned' } }
+  return { status: 200, body: { description: text } }
+}
+
 export async function generateImage(
   env: RealtimeEnv,
   prompt: string,

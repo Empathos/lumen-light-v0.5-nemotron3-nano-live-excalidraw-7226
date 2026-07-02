@@ -127,6 +127,24 @@ export function describeScene(api: ExcalidrawImperativeAPI | null): string | nul
   if (uniqLabels.length) {
     lines.push(`Text and labels present: ${uniqLabels.map((l) => `"${l}"`).join(', ')}.`)
   }
+  // Buffered vision (LL-012): pre-read notes stored on image elements make
+  // "what does it say?" answerable instantly, without moving pixels.
+  const preRead = inv.nodes
+    .filter((n) => ['screenshot', 'generated-image', 'image'].includes(n.kind))
+    .filter((n) => typeof n.tags['ai.description'] === 'string' && n.tags['ai.description'])
+    .slice(0, 6)
+  if (preRead.length) {
+    lines.push(
+      'Image contents (pre-read, literal): ' +
+        preRead
+          .map((n) => {
+            const who = n.kind === 'screenshot' ? `screenshot${n.label ? ` of ${hostOf(n.label)}` : ''}` : n.kind === 'generated-image' ? 'generated image' : 'image'
+            return `[${who}] ${truncate(String(n.tags['ai.description']), 220)}`
+          })
+          .join(' · '),
+    )
+  }
+
   // Anything visual — images OR hand-drawn content — can only be understood by
   // looking. Point the model at capture_canvas so it recognizes, not just counts.
   const hasVisual = screenshots.length > 0 || generated.length > 0 || untaggedImages > 0 || other > 0

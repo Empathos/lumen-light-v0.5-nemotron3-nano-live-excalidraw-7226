@@ -21,6 +21,7 @@ import {
 } from './canvas/docWindow'
 import { snapshotBeforeClear, wipeBoard, restoreLastClear } from './canvas/clearScene'
 import { lookAtItem } from './canvas/zoomItem'
+import { preReadImage } from './canvas/annotateImage'
 import { ConversationPanel } from './ui/ConversationPanel'
 import { MockAssistantProvider } from './assistant/mockProvider'
 import { RealtimeClient, type RealtimeStatus } from './realtime/RealtimeClient'
@@ -148,6 +149,7 @@ export function App() {
         y: typeof a.y === 'number' ? a.y : undefined,
         meta: { kind: 'generated', label: prompt },
       })
+      void preReadImage(api, dims.id, data.dataURL) // buffered vision (LL-012)
       return { ok: true, placed: true, ...dims }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -224,6 +226,7 @@ export function App() {
         y: typeof a.y === 'number' ? a.y : undefined,
         meta: { kind: 'screenshot', label: data.url ?? url },
       })
+      void preReadImage(api, dims.id, data.dataURL) // buffered vision (LL-012)
       return { ok: true, placed: true, url: data.url ?? url, ...dims }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }

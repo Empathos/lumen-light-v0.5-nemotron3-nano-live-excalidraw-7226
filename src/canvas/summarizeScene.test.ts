@@ -90,6 +90,22 @@ describe('describeScene', () => {
     expect(text).not.toContain('USER FOCUS')
   })
 
+  it('surfaces pre-read image notes (LL-012)', () => {
+    const text = describeScene(
+      apiWith([
+        {
+          type: 'image',
+          customData: {
+            lumenImage: { kind: 'screenshot', label: 'https://msn.com' },
+            lumenTags: { 'ai.description': 'MSN homepage; top headline: Michael Byrne dead at 82.' },
+          },
+        },
+      ]),
+    )
+    expect(text).toContain('Image contents (pre-read, literal):')
+    expect(text).toContain('Michael Byrne dead at 82')
+  })
+
   it('never reports a board with only hand-drawn content as empty (BUG-004)', () => {
     const text = describeScene(apiWith([{ type: 'freedraw' }, { type: 'freedraw' }, { type: 'line' }]))
     expect(text).not.toBeNull()
