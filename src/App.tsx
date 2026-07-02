@@ -286,8 +286,9 @@ export function App() {
     if (!api) return { ok: false, error: 'canvas not ready' }
     const a = (args ?? {}) as Record<string, unknown>
     const target = typeof a.target === 'string' ? a.target : ''
+    const question = typeof a.question === 'string' && a.question.trim() ? a.question.trim() : 'Transcribe the most prominent readable text and describe the image literally.'
     if (!target.trim()) return { ok: false, error: 'missing target' }
-    return lookAtItem(api, target)
+    return lookAtItem(api, target, question)
   }, [])
 
   const clearCanvas = useCallback((args: unknown) => {
@@ -337,7 +338,7 @@ export function App() {
     // GAP-001 spike: does Inworld accept a REMOTE image_url? Needs a live session.
     w.__lumenInjectImage = (url: string, text?: string) =>
       clientRef.current?.injectImage(url, text) ?? false
-    w.__lumenLookAt = (target: string) => lookAtItemFromArgs({ target })
+    w.__lumenLookAt = (target: string, question?: string) => lookAtItemFromArgs({ target, question })
     w.__lumenTelemetry = () => clientRef.current?.telemetryDump()
     // IDEA-007: select an element programmatically (live focus testing).
     w.__lumenSelect = (id: string) =>

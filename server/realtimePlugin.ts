@@ -128,12 +128,15 @@ export function lumenRealtimePlugin(env: RealtimeEnv): Plugin {
           }
           try {
             const body = await readBody(req)
-            const { dataURL } = JSON.parse(body || '{}') as { dataURL?: string }
+            const { dataURL, question } = JSON.parse(body || '{}') as {
+              dataURL?: string
+              question?: string
+            }
             if (!dataURL || typeof dataURL !== 'string') {
               sendJson(res, 400, { error: 'Missing dataURL.' })
               return
             }
-            const { status, body: out } = await describeImage(env, dataURL)
+            const { status, body: out } = await describeImage(env, dataURL, question)
             sendJson(res, status, out)
           } catch (err) {
             sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) })

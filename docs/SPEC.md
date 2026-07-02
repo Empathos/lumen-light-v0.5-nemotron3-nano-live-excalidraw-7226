@@ -165,19 +165,19 @@ the notes ("Image contents (pre-read, literal): …", bounded), making most
 "what does it say?" questions instant text answers. `look_at_item` remains the
 deep read when the note isn't enough.
 
-### `look_at_item` (per-item vision)
+### `look_at_item` (delegated per-item vision, LL-013)
 
-`{ target }`. Returns ONE board item as an image at full sharpness: for
-images/screenshots, the ORIGINAL stored bytes from the file store (the canvas
-displays a scaled copy; the original survives at full resolution) — for other
-elements, a crisp single-element export. Targets resolve via
+`{ target, question }`. The close-up rung of the perception ladder — with NO
+pixels on the data channel. The resolved item's ORIGINAL bytes (full
+resolution; the canvas displays only a scaled copy) plus the model's question
+go to `/api/image/describe` over HTTP; a fast vision model (Gemini,
+server-side, direct — not through Inworld) answers strictly from the image,
+and only that short text answer enters the session. Targets resolve via
 `inventory/resolveTarget.ts`: `"selected"` → the live selection, then exact
-label, label/host substring, then a unique kind word ("screenshot", "image",
-"document"); ambiguity returns candidates instead of guessing. Results are
-budget-capped (~1MB data URL, JPEG-downscaled only when over), so a busy board
-never endangers the channel. This is the "close-up" rung of the perception
-ladder: read_canvas = index, capture_canvas = layout, look_at_item = read one
-thing (LL-011).
+label, label/host substring, then a unique kind word; ambiguity returns
+candidates instead of guessing. Non-image elements are exported crisply and
+sent down the same HTTP path. Doctrine: conversation rides the voice pipe,
+pixels ride HTTP — always.
 
 ### `clear_canvas` (full wipe, confirmed)
 

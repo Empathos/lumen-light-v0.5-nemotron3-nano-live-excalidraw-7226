@@ -337,12 +337,16 @@ const LOOK_AT_ITEM_TOOL = {
   parameters: {
     type: 'object',
     additionalProperties: false,
-    required: ['target'],
+    required: ['target', 'question'],
     properties: {
       target: {
         type: 'string',
         description:
           'Which item to look at: "selected", a quoted label, a site name, or a kind word like "screenshot"/"image"/"document".',
+      },
+      question: {
+        type: 'string',
+        description: 'What you want to know about the item — be specific; exact quotes come back when readable.',
       },
     },
   },
@@ -603,6 +607,7 @@ export async function createCall(
 export async function describeImage(
   env: RealtimeEnv,
   dataURL: string,
+  question?: string,
 ): Promise<{ status: number; body: { description?: string; error?: string } }> {
   if (!env.geminiApiKey) return { status: 500, body: { error: 'GEMINI_API_KEY is not set.' } }
   const m = dataURL.match(/^data:(image\/[\w+.-]+);base64,(.+)$/)
@@ -619,8 +624,9 @@ export async function describeImage(
             parts: [
               { inlineData: { mimeType: m[1], data: m[2] } },
               {
-                text:
-                  'TRANSCRIBE FIRST: quote the main headline/title and the 2-3 most prominent readable text items exactly as written (section names, visible dates). THEN one short literal sentence on what the image shows. If some text is unreadable, say which. No speculation, no generic layout talk. Max 90 words.',
+                text: question
+                  ? `Answer this question strictly and only from what is visibly readable in the image — quote exact text where relevant, and say plainly if the answer is not readable. No speculation. Max 60 words. Question: ${question}`
+                  : 'TRANSCRIBE FIRST: quote the main headline/title and the 2-3 most prominent readable text items exactly as written (section names, visible dates). THEN one short literal sentence on what the image shows. If some text is unreadable, say which. No speculation, no generic layout talk. Max 90 words.',
               },
             ],
           },

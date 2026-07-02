@@ -147,7 +147,7 @@ The agent drives everything through these tools. Voice and text resolve to the
 | `draw_flow` | Shortcut for quick linear flowcharts (`start`/`process`/`decision`/`end` → shapes + bound arrows). |
 | `capture_canvas` | Screenshot the canvas and feed it back to the model as an image, so it can *see* its own layout and call a draw tool again to realign. |
 | `read_canvas` | On-demand text inventory of the board (shapes, connectors, screenshots by site, generated images by prompt, document, labels) — the cheap way for the model to check what's on the canvas mid-session. |
-| `look_at_item` | Zoom into a single item — returns its original full-resolution pixels so text inside screenshots is actually readable. |
+| `look_at_item` | Ask a question about a single item — a server-side vision model reads it at original resolution over HTTP and returns just the text answer (no image traffic in the session). |
 | `clear_canvas` | Wipe the whole board — diagram, images, screenshots, and document — with a tool-enforced confirmation step and a restorable undo snapshot (`restore: true`). |
 | `generate_image` | Generate an image from a prompt (Google "Nano Banana") and place it on the canvas. Persists across draws. |
 | `screenshot_website` | Capture a live public web page and place it on the canvas as an image. Persists across draws. |
