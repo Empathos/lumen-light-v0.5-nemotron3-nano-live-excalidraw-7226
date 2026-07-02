@@ -18,6 +18,7 @@ deleted; when a decision changes, a new ADR supersedes the old one.
 | [0011](ADR-0011-visual-grounding-on-resume.md) | Canvas screenshot in re-grounding when the board has images | Reverted (broke voice; model uses capture_canvas on demand) |
 | [0012](ADR-0012-canvas-agnostic-inventory.md) | Canvas-agnostic board inventory with extensible tagging | Accepted (branch `v0.5-inworld-62426-excalidraw`) |
 | [0013](ADR-0013-gemini-live-provider.md) | Gemini Live realtime provider — ephemeral tokens over WebSocket (supersedes 0007 here) | Accepted (branch `v0.5-gemini-live-7226`) |
+| [0014](ADR-0014-nemotron-openrouter-chat-brain.md) | Nemotron 3 Nano chat brain via OpenRouter, cascade voice (supersedes 0013 here) | Accepted (branch `v0.5-nemotron3-nano-live-7226`) |
 
 ## Status values
 

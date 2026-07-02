@@ -4,9 +4,9 @@
 # serverless functions (netlify/functions/*.mts) that reuse server/backend.ts,
 # so API keys stay server-side. Set these env vars in the Netlify UI
 # (Site settings -> Environment variables) — same names as .env.local:
-#   GEMINI_API_KEY (required for live voice + images), optionally
-#   GEMINI_LIVE_MODEL / GEMINI_LIVE_VOICE, ONE of TAVILY_API_KEY /
-#   BRAVE_API_KEY, and THUM_IO_KEY.
+#   OPENROUTER_API_KEY (required for the Nemotron brain), GEMINI_API_KEY
+#   (images + vision reads), optionally NEMOTRON_MODEL, ONE of
+#   TAVILY_API_KEY / BRAVE_API_KEY, and THUM_IO_KEY.
 
 [build]
   command = "npm run build"

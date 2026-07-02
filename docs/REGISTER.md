@@ -27,6 +27,7 @@ Backfilled 2026-07-02 from the sessions of 2026-06-27 → 2026-07-02.
 | GAP-002 | Surface and survive storage-quota failures | RISK-002 | built | ++0+ | [persistence](../src/canvas/persistence.ts), [test](../src/canvas/persistence.test.ts) | warns on failed save; falls back to slim scene without files |
 | GAP-001 | Verify Inworld accepts remote image_url | RISK-001 | built | ++-0 | [KNOWN_ISSUES](KNOWN_ISSUES.md) | verified 2026-07-02: Inworld fetches URLs, but Google-backed router rejects http(s) — inline base64 or gs:// only; X resolved to − for current stack |
 | LL-014 | Gemini Live realtime provider | — | built | +00? | [ADR-0013](decisions/ADR-0013-gemini-live-provider.md) | theme: Provider; U: first-party native-audio + vision in the stack already used for images; X: WS msg caps + session limits, compression mitigates; M: setup+text-turn+audio smoke passed 2026-07-02, 13-tool live voice eval pending |
+| LL-015 | Nemotron 3 Nano chat brain | LL-014 | built | +00? | [ADR-0014](decisions/ADR-0014-nemotron-openrouter-chat-brain.md) | U: ~$0.00005 and ~3s per tool turn (reasoning off); X: OpenRouter has no realtime audio API — voice cascades through browser speech (quality capped), text path unaffected; M: E2E browser smoke drew correct flow via tool call 2026-07-03, multi-tool voice eval pending |
 
 ## Ideas
 

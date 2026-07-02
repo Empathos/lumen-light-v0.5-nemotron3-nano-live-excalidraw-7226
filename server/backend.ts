@@ -9,18 +9,13 @@
  * inputs/outputs, so it can run in any Node 18+ runtime.
  */
 
-import { GoogleGenAI } from '@google/genai'
-
 export interface RealtimeEnv {
-  /**
-   * Google Gemini API key — powers the Live voice session (via ephemeral
-   * tokens, ADR-0013) AND the generate_image / describe tools. Server-side only.
-   */
+  /** OpenRouter API key — powers the Nemotron chat brain (ADR-0014). Server-side only. */
+  openrouterApiKey?: string
+  /** OpenRouter model id; defaults to nvidia/nemotron-3-nano-30b-a3b. */
+  chatModel?: string
+  /** Google Gemini API key — generate_image and image describe/vision tools. Server-side only. */
   geminiApiKey?: string
-  /** Gemini Live model id; defaults to gemini-2.5-flash-native-audio-latest. */
-  liveModel?: string
-  /** Prebuilt Gemini voice name for audio output; defaults to Aoede. */
-  liveVoice?: string
   /** Gemini image model ("Nano Banana"); defaults to gemini-2.5-flash-image. */
   imageModel?: string
   /** Tavily API key for the web_search tool (preferred). Server-side only. */
@@ -35,9 +30,9 @@ export interface RealtimeEnv {
 export function readEnv(): RealtimeEnv {
   const e = process.env
   return {
+    openrouterApiKey: e.OPENROUTER_API_KEY,
+    chatModel: e.NEMOTRON_MODEL,
     geminiApiKey: e.GEMINI_API_KEY,
-    liveModel: e.GEMINI_LIVE_MODEL,
-    liveVoice: e.GEMINI_LIVE_VOICE,
     imageModel: e.GEMINI_IMAGE_MODEL,
     tavilyApiKey: e.TAVILY_API_KEY,
     braveApiKey: e.BRAVE_API_KEY,
@@ -111,8 +106,9 @@ You cannot see the canvas unless you look. You have two ways to look:
 read_canvas returns an instant text inventory of what is on the board (shapes,
 connectors, screenshots, images, document, labels) — use it whenever the user
 asks what's on the canvas or you're about to build on existing content and
-aren't sure what's there. capture_canvas returns an actual screenshot — use it
-when layout or image content matters.
+aren't sure what's there. capture_canvas returns a detailed text read of how
+the board actually RENDERED (positions, overlaps, cut-off elements, connector
+routing) — use it when layout matters.
 
 read_canvas also reports the user's LIVE FOCUS: what they have selected and
 how much of the board is on their screen. When the user says "this", "this
@@ -130,27 +126,26 @@ quick "what does it say/show?" questions straight from that note — instantly,
 no tool pause. When the user needs MORE than the note covers (a specific
 corner, a small date, details the note doesn't mention), call look_at_item.
 
-When you need to READ what is inside one image beyond its pre-read note — do
-NOT squint at capture_canvas: call
-look_at_item with that item as the target. It returns the original
-full-resolution pixels of just that item. capture_canvas is for overall
-layout; look_at_item is for reading one thing closely.
+When you need to READ what is inside one image beyond its pre-read note, call
+look_at_item with that item as the target — it reads the original
+full-resolution pixels of just that item and answers your question.
+capture_canvas is for overall layout; look_at_item is for reading one thing
+closely.
 
 NEVER describe what a screenshot or image contains from memory or from your
-general knowledge of what that website usually shows. Only state what you can
-actually read in an image returned by look_at_item or capture_canvas IN THIS
-conversation. If you have not looked yet, look first. If the text is still
-too small or unclear after looking, SAY SO plainly — "I can't read that part"
-is always the right answer over a guess. Guessed content destroys the user's
-trust in everything else you say.
+general knowledge of what that website usually shows. Only state what
+look_at_item or capture_canvas actually REPORTED in this conversation. If you
+have not looked yet, look first. If a report says something is unreadable or
+doesn't mention it, SAY SO plainly — "I can't read that part" is always the
+right answer over a guess. Guessed content destroys the user's trust in
+everything else you say.
 
-After drawing something non-trivial,
-call capture_canvas to get a screenshot of how it actually rendered. Inspect it
-for overlapping shapes, bad spacing, off-screen or cut-off elements, and
-connectors going to the wrong place — then call draw_canvas again with corrected
-x/y/w/h to clean it up. Use this look-then-fix loop especially when you place
-elements by coordinates. Don't over-do it: a quick check and one realignment
-pass is usually enough.
+After drawing something non-trivial, call capture_canvas to check how it
+actually rendered. Its report flags overlapping shapes, bad spacing,
+off-screen or cut-off elements, and connectors going to the wrong place — then
+call draw_canvas again with corrected x/y/w/h to clean it up. Use this
+look-then-fix loop especially when you place elements by coordinates. Don't
+over-do it: a quick check and one realignment pass is usually enough.
 
 When the user asks to clear/wipe the whole board or start fresh, use
 clear_canvas — it removes EVERYTHING, including images and the document, unlike
@@ -160,15 +155,16 @@ sure?") and call again with confirmed: true only after an explicit yes. Never
 skip straight to confirmed. If they change their mind afterwards, clear_canvas
 with restore: true brings the board back.
 
-IMPORTANT: the screenshot returned after capture_canvas is generated
-automatically by the app — it is NOT provided by the user. Never thank the user
-for screenshots, never say "thanks for the screenshot", and don't talk about
-images being shared with you. Just look and silently adjust the canvas.
+IMPORTANT: capture_canvas and look_at_item reports are generated automatically
+by the app — they are NOT provided by the user. Never thank the user for
+screenshots or reports, and don't talk about images being shared with you.
+Just read the report and silently adjust the canvas.
 
 HOW YOU SPEAK
-You are on a live voice call. Speak the way a person speaks, not the way a
-chatbot writes. The canvas is the main output — your voice is the warm,
-human thread around it.
+Your replies are spoken aloud by a synthetic voice and shown as text. Speak
+the way a person speaks, not the way a chatbot writes. The canvas is the main
+output — your words are the warm, human thread around it. Plain words only:
+no markdown, no bullet lists, no emoji in replies.
 
 TURN LENGTH: short by default — usually 5 to 12 words. A quick acknowledgement
 ("yeah", "mm-hm", "right", "oh nice") is often the whole turn. Go longer only
@@ -303,7 +299,7 @@ const CAPTURE_CANVAS_TOOL = {
   type: 'function',
   name: 'capture_canvas',
   description:
-    'Take a screenshot of the current canvas so you can see how it actually rendered. Returns the image to you. Use it after drawing to verify layout (overlaps, spacing, off-screen or cut-off elements, misrouted connectors), then call draw_canvas again to realign if needed.',
+    'Check how the current canvas actually rendered. Returns a detailed text report of the layout read from a fresh screenshot: element positions, overlaps, spacing problems, off-screen or cut-off elements, misrouted connectors. Use it after drawing, then call draw_canvas again to realign if needed. Takes a few seconds — say a brief filler first.',
   parameters: {
     type: 'object',
     additionalProperties: false,
@@ -327,7 +323,7 @@ const LOOK_AT_ITEM_TOOL = {
   type: 'function',
   name: 'look_at_item',
   description:
-    'Look closely at ONE item on the canvas at full sharpness — returns that single item as an image (for screenshots and pictures: the original full-resolution pixels, not a blurry re-capture). Use this whenever text or details inside an image are too small to read in capture_canvas, or the user asks what a specific item says or shows. Reading the image takes several seconds — ALWAYS say a brief filler first ("let me take a close look — one moment") so the user never sits in silence. target examples: "selected" (what the user has selected), "the wikipedia screenshot", "the mini cooper", a label like "Budget Review", or just "screenshot" when there is only one.',
+    'Look closely at ONE item on the canvas — a vision reader examines that single item at its original full resolution and returns a precise text answer to your question (exact quotes when readable). Use this whenever the user asks what a specific item says or shows, or details are beyond an image\'s pre-read note. Takes several seconds — ALWAYS say a brief filler first ("let me take a close look — one moment") so the user never sits in silence. target examples: "selected" (what the user has selected), "the wikipedia screenshot", "the mini cooper", a label like "Budget Review", or just "screenshot" when there is only one.',
   parameters: {
     type: 'object',
     additionalProperties: false,
@@ -500,150 +496,113 @@ const SCREENSHOT_WEBSITE_TOOL = {
 }
 
 // ---------------------------------------------------------------------------
-// Gemini Live session (ADR-0013, LL-014)
+// Nemotron 3 Nano chat brain via OpenRouter (ADR-0014, LL-015)
 // ---------------------------------------------------------------------------
 
-type JsonSchema = Record<string, unknown>
+const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
+const DEFAULT_CHAT_MODEL = 'nvidia/nemotron-3-nano-30b-a3b'
 
-/**
- * Convert one of the OpenAI-Realtime-style tool schemas above into a Gemini
- * function-declaration Schema: `additionalProperties` is not part of Gemini's
- * OpenAPI subset (setup is rejected if present), and `type` values are the
- * protobuf enum names, which are uppercase.
- */
-function toGeminiSchema(schema: JsonSchema): JsonSchema {
-  const out: JsonSchema = {}
-  for (const [key, value] of Object.entries(schema)) {
-    if (key === 'additionalProperties') continue
-    if (key === 'type' && typeof value === 'string') {
-      out.type = value.toUpperCase()
-    } else if (key === 'properties' && value && typeof value === 'object') {
-      out.properties = Object.fromEntries(
-        Object.entries(value as Record<string, JsonSchema>).map(([name, sub]) => [
-          name,
-          toGeminiSchema(sub),
-        ]),
-      )
-    } else if (key === 'items' && value && typeof value === 'object') {
-      out.items = toGeminiSchema(value as JsonSchema)
-    } else {
-      out[key] = value
-    }
-  }
-  return out
+const TOOLS = [
+  DRAW_CANVAS_TOOL,
+  DRAW_FLOW_TOOL,
+  CAPTURE_CANVAS_TOOL,
+  READ_CANVAS_TOOL,
+  LOOK_AT_ITEM_TOOL,
+  CLEAR_CANVAS_TOOL,
+  GENERATE_IMAGE_TOOL,
+  OPEN_DOCUMENT_TOOL,
+  HIGHLIGHT_PASSAGE_TOOL,
+  READ_DOCUMENT_TOOL,
+  BRIEF_FROM_CANVAS_TOOL,
+  WEB_SEARCH_TOOL,
+  SCREENSHOT_WEBSITE_TOOL,
+]
+
+// Our tool definitions are flat (Realtime-API style); chat/completions wants
+// them wrapped as { type, function: {...} }.
+const CHAT_TOOLS = TOOLS.map((tool) => ({
+  type: 'function',
+  function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+}))
+
+/** One OpenAI-style chat message, loosely typed (client holds the history). */
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  content?: string | null
+  tool_calls?: unknown[]
+  tool_call_id?: string
 }
 
-function toFunctionDeclaration(tool: {
-  name: string
-  description: string
-  parameters: { properties?: Record<string, unknown> }
-}) {
-  const params = tool.parameters
-  // No-arg tools (capture_canvas, read_canvas, read_document) must omit
-  // `parameters` entirely — an OBJECT schema with zero properties is rejected.
-  const hasProps = params.properties && Object.keys(params.properties).length > 0
+/** What the client needs to know before starting a session. */
+export function chatConfig(env: RealtimeEnv) {
   return {
-    name: tool.name,
-    description: tool.description,
-    ...(hasProps ? { parameters: toGeminiSchema(params as JsonSchema) } : {}),
+    model: env.chatModel || DEFAULT_CHAT_MODEL,
+    hasKey: Boolean(env.openrouterApiKey),
   }
 }
 
 /**
- * The BidiGenerateContentSetup sent as the first WebSocket message of every
- * Live session. Built server-side (single source of truth, same as the old
- * session config) and handed to the client alongside the ephemeral token.
+ * Run one chat turn against OpenRouter: prepend the system instructions and
+ * tool schemas (single source of truth, key stays server-side) and return the
+ * assistant message verbatim — the client executes any tool_calls and calls
+ * again. Stateless per request; the conversation lives in the client.
  */
-export function buildLiveSetup(env: RealtimeEnv) {
-  return {
-    // NOTE: Developer-API model ids, not the Vertex ones — list what your key
-    // can use with GET /v1beta/models and filter for bidiGenerateContent.
-    model: `models/${env.liveModel || 'gemini-2.5-flash-native-audio-latest'}`,
-    generationConfig: {
-      responseModalities: ['AUDIO'],
-      // A little sampling variety makes phrasing feel less templated.
-      temperature: 0.8,
-      speechConfig: {
-        voiceConfig: { prebuiltVoiceConfig: { voiceName: env.liveVoice || 'Aoede' } },
-        languageCode: 'en-US',
-      },
-    },
-    systemInstruction: { parts: [{ text: INSTRUCTIONS }] },
-    tools: [
-      {
-        functionDeclarations: [
-          DRAW_CANVAS_TOOL,
-          DRAW_FLOW_TOOL,
-          CAPTURE_CANVAS_TOOL,
-          READ_CANVAS_TOOL,
-          LOOK_AT_ITEM_TOOL,
-          CLEAR_CANVAS_TOOL,
-          GENERATE_IMAGE_TOOL,
-          OPEN_DOCUMENT_TOOL,
-          HIGHLIGHT_PASSAGE_TOOL,
-          READ_DOCUMENT_TOOL,
-          BRIEF_FROM_CANVAS_TOOL,
-          WEB_SEARCH_TOOL,
-          SCREENSHOT_WEBSITE_TOOL,
-        ].map(toFunctionDeclaration),
-      },
-    ],
-    // Transcripts of both sides come from the session itself — no separate STT.
-    inputAudioTranscription: {},
-    outputAudioTranscription: {},
-    realtimeInputConfig: {
-      // Tolerate natural pauses instead of cutting the user off mid-thought
-      // (the Gemini equivalent of Inworld's semantic_vad eagerness 'low').
-      automaticActivityDetection: {
-        endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
-        silenceDurationMs: 800,
-      },
-    },
-    // Without compression, native-audio sessions hit the context ceiling in
-    // ~15 minutes of audio; the sliding window keeps long sessions alive.
-    contextWindowCompression: { slidingWindow: {} },
-  }
-}
-
-/**
- * Mint an ephemeral Live API token (single use, short start window) and return
- * it together with the session setup. The browser connects straight to Google
- * with the token — the API key never leaves the server (ADR-0013).
- */
-export async function createLiveToken(env: RealtimeEnv): Promise<{
+export async function runChatTurn(
+  env: RealtimeEnv,
+  messages: ChatMessage[],
+): Promise<{
   status: number
-  body: { accessToken?: string; setup?: Record<string, unknown>; error?: string }
+  body: { message?: Record<string, unknown>; usage?: Record<string, unknown>; error?: string }
 }> {
-  if (!env.geminiApiKey) {
-    return { status: 500, body: { error: 'GEMINI_API_KEY is not set.' } }
+  if (!env.openrouterApiKey) {
+    return { status: 500, body: { error: 'OPENROUTER_API_KEY is not set.' } }
   }
-  // Ephemeral tokens are a v1alpha-only surface.
-  const ai = new GoogleGenAI({
-    apiKey: env.geminiApiKey,
-    httpOptions: { apiVersion: 'v1alpha' },
-  })
-  // One retry: the mint is a single cheap POST, and a flapping host network
-  // (VPN toggles, dead IPv6 routes) can transiently fail exactly this fetch.
-  let lastError = 'token mint failed'
-  for (let attempt = 0; attempt < 2; attempt++) {
-    if (attempt > 0) await new Promise((r) => setTimeout(r, 400))
-    try {
-      const token = await ai.authTokens.create({
-        config: {
-          uses: 1,
-          expireTime: new Date(Date.now() + 30 * 60_000).toISOString(),
-          newSessionExpireTime: new Date(Date.now() + 60_000).toISOString(),
-        },
-      })
-      if (!token.name) {
-        return { status: 502, body: { error: 'Token mint returned no token name.' } }
-      }
-      return { status: 200, body: { accessToken: token.name, setup: buildLiveSetup(env) } }
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err)
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return { status: 400, body: { error: 'messages must be a non-empty array.' } }
+  }
+  let r: Response
+  try {
+    r = await fetch(OPENROUTER_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.openrouterApiKey}`,
+        'Content-Type': 'application/json',
+        // OpenRouter attribution headers (optional, used for their dashboard).
+        'HTTP-Referer': 'https://github.com/Empathos/lumen-light',
+        'X-Title': 'Lumen Light',
+      },
+      body: JSON.stringify({
+        model: env.chatModel || DEFAULT_CHAT_MODEL,
+        // Nemotron 3 is a reasoning model: left to think it takes 60+ seconds
+        // per turn (measured). Same lesson as the Inworld router's
+        // reasoning.effort NONE — disabled for conversational latency.
+        reasoning: { enabled: false },
+        // A little sampling variety makes phrasing feel less templated.
+        temperature: 0.8,
+        max_tokens: 2048,
+        messages: [{ role: 'system', content: INSTRUCTIONS }, ...messages],
+        tools: CHAT_TOOLS,
+      }),
+    })
+  } catch (err) {
+    return { status: 502, body: { error: err instanceof Error ? err.message : 'chat fetch failed' } }
+  }
+  const data = (await r.json().catch(() => ({}))) as {
+    choices?: { message?: Record<string, unknown> }[]
+    usage?: Record<string, unknown>
+    error?: { message?: string }
+  }
+  if (!r.ok || data.error) {
+    return {
+      status: r.ok ? 502 : r.status,
+      body: { error: data.error?.message || `OpenRouter error ${r.status}` },
     }
   }
-  return { status: 502, body: { error: lastError } }
+  const message = data.choices?.[0]?.message
+  if (!message) {
+    return { status: 502, body: { error: 'No message returned by OpenRouter.' } }
+  }
+  return { status: 200, body: { message, usage: data.usage } }
 }
 
 /** generate_image backend: prompt -> Google Gemini ("Nano Banana") -> data URL. */

@@ -25,17 +25,19 @@ See [`PRD.md`](./PRD.md) for the product vision and scope.
 
 ## Status
 
-Branch `v0.5-gemini-live-7226` (Gemini Live split of the Inworld
-excalidraw webdemo, see [ADR-0013](./docs/decisions/ADR-0013-gemini-live-provider.md)).
+Branch `v0.5-nemotron3-nano-live-7226` (NVIDIA Nemotron 3 Nano split of the
+gemini-live fork, see [ADR-0014](./docs/decisions/ADR-0014-nemotron-openrouter-chat-brain.md)).
 Working today:
 
 - **Excalidraw canvas** as the main surface, in **dark mode by default**, with the
   scene (drawings, images, briefing window) **persisted to localStorage** so it
   survives a refresh or back-navigation.
-- **Gemini Live voice + text session** over WebSocket, where the model calls
-  Lumen's tools to diagram the conversation live. Brain and voice are one
-  **native-audio model** (`gemini-2.5-flash-native-audio-latest`); the browser
-  connects directly to Google with a server-minted **ephemeral token**.
+- **Nemotron 3 Nano voice + text session**, where the model calls Lumen's tools
+  to diagram the conversation live. The brain is **`nvidia/nemotron-3-nano-30b-a3b`**
+  via OpenRouter (reasoning disabled for ~3 s tool turns); voice is a cascade —
+  the browser's SpeechRecognition in, speechSynthesis out. The model is
+  text-only: canvas vision is delegated to server-side reads whose text reports
+  enter the session (extending LL-013).
 - **An offline fallback**: with no live session, typed text uses a deterministic
   local parser so the app is useful with no keys/network.
 - **Generated images on the canvas (`generate_image`)** — the agent generates a
@@ -79,12 +81,13 @@ cp .env.local.example .env.local
 ```
 
 ```bash
-# Required for the live voice/text collaborator AND generate_image/vision:
-GEMINI_API_KEY=your-gemini-api-key            # https://aistudio.google.com/apikey
+# Required for the Nemotron 3 Nano brain:
+OPENROUTER_API_KEY=your-openrouter-api-key    # https://openrouter.ai/keys
+# NEMOTRON_MODEL=nvidia/nemotron-3-nano-30b-a3b   # optional override
 
-# Optional live-session overrides (defaults in code):
-# GEMINI_LIVE_MODEL=gemini-2.5-flash-native-audio-latest
-# GEMINI_LIVE_VOICE=Aoede
+# Strongly recommended — generate_image plus the vision reads the text-only
+# brain depends on (image pre-reads, look_at_item, capture_canvas layout reports):
+GEMINI_API_KEY=your-gemini-api-key            # https://aistudio.google.com/apikey
 
 # Optional — each one unlocks a tool; omit to disable that tool:
 TAVILY_API_KEY=your-tavily-api-key            # web_search (preferred)
@@ -92,15 +95,14 @@ TAVILY_API_KEY=your-tavily-api-key            # web_search (preferred)
 THUM_IO_KEY=your-thum-io-key                  # screenshot_website
 ```
 
-The Gemini key is required for the live collaborator; the offline parser works
-without any keys.
+The OpenRouter key is required for the live collaborator; the offline parser
+works without any keys.
 
 > Security: every key is used **only** by the server side (the Vite dev
-> middleware locally, or the Netlify Functions in production). The browser never
-> sees the API key — for the live session it receives a short-lived, single-use
-> **ephemeral token** minted server-side
-> ([ADR-0013](./docs/decisions/ADR-0013-gemini-live-provider.md)); everything
-> else is proxied. Never commit `.env.local`.
+> middleware locally, or the Netlify Functions in production), which proxies
+> every model call — the browser talks exclusively to our own `/api/...`
+> endpoints ([ADR-0014](./docs/decisions/ADR-0014-nemotron-openrouter-chat-brain.md)).
+> Voice uses the browser's own Web Speech APIs. Never commit `.env.local`.
 
 ## Run it
 
@@ -180,35 +182,37 @@ Input modality is decoupled from canvas behavior. Voice and text both resolve to
 the same tool calls, which are projected onto the canvas:
 
 ```text
-voice (mic) ─┐                                ┌─► draw_canvas / draw_flow ─┐
-             ├─► Gemini Live session ─────────┤  generate_image / screenshot │
-text (live) ─┘  (native-audio, WebSocket)     ├─► open_document / web_search ├─► canvas
-                                              └─► spoken/text reply          ┘  (Excalidraw)
+voice (browser STT) ─┐                        ┌─► draw_canvas / draw_flow ─┐
+                     ├─► Nemotron 3 Nano ─────┤  generate_image / screenshot │
+text (live) ─────────┘  (OpenRouter chat loop)├─► open_document / web_search ├─► canvas
+                                              └─► reply (text + browser TTS) ┘  (Excalidraw)
 
 text (offline) ─► MockAssistantProvider ──────► draw_flow ─────────────────────► canvas
 ```
 
-The session speaks Gemini's `BidiGenerateContent` protocol (`setup` /
-`realtimeInput` / `toolCall` / `toolResponse` / `serverContent`); only the
-connection + session-config layer is provider-specific.
+The session is an OpenAI-style chat/completions tool loop: the client holds the
+conversation, our server prepends instructions + tool schemas and forwards each
+turn to OpenRouter; `tool_calls` are executed in the browser and looped back as
+`role:"tool"` results. The model is text-only — canvas vision is delegated to
+server-side Gemini reads whose text reports enter the session (ADR-0014).
 
 Server logic lives in `server/backend.ts` (framework-agnostic) and is wired two
 ways:
 
 - **Dev:** `server/realtimePlugin.ts` — Vite dev-server middleware exposing
-  `/api/live/token`, `/api/image/generate`, `/api/search`, and
+  `/api/chat`, `/api/image/generate`, `/api/search`, and
   `/api/screenshot`. Holds the keys; they never reach the browser. See
-  [ADR-0013](./docs/decisions/ADR-0013-gemini-live-provider.md).
+  [ADR-0014](./docs/decisions/ADR-0014-nemotron-openrouter-chat-brain.md).
 - **Production:** `netlify/functions/*.mts` — the same `backend.ts` logic exposed
   as Netlify Functions at the identical `/api/...` paths.
 
 Client:
 
-- `src/realtime/RealtimeClient.ts` — fetches an ephemeral token + session setup,
-  opens the WebSocket to Google, streams mic PCM16 up (AudioWorklet, 16 kHz) and
-  plays model PCM16 down (24 kHz, gapless, flushed on barge-in), and handles
-  function calls (`toolCall` → run tool → `toolResponse`, with tool images
-  delivered as inline base64 `clientContent`).
+- `src/realtime/RealtimeClient.ts` — the chat-loop session: client-held history,
+  `POST /api/chat` per hop, tool execution via the same callbacks as every
+  previous provider, capture_canvas images swapped for server-side layout
+  reports, and the Web Speech cascade (SpeechRecognition in, speechSynthesis
+  out, self-echo guarded).
 - `src/canvas/drawCanvas.ts` / `drawFlow.ts` — project tool args onto Excalidraw
   elements. `normalizeFlow.ts` / `normalizeCanvasElements` defensively coerce
   tool-call args into valid scenes before touching the canvas.

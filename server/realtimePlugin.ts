@@ -2,7 +2,9 @@ import type { Plugin, Connect } from 'vite'
 import type { ServerResponse } from 'node:http'
 import {
   type RealtimeEnv,
-  createLiveToken,
+  type ChatMessage,
+  chatConfig,
+  runChatTurn,
   generateImage,
   describeImage,
   runWebSearch,
@@ -15,7 +17,8 @@ import {
  * Functions used in production); this file only wires it to Vite's Connect
  * middleware. The API keys NEVER leave the server.
  *
- *   GET  /api/live/token        -> ephemeral Gemini Live token + session setup
+ *   GET  /api/chat              -> chat brain config (model, key present)
+ *   POST /api/chat              -> one Nemotron chat turn via OpenRouter (ADR-0014)
  *   POST /api/image/generate    -> Gemini image generation
  *   POST /api/image/describe    -> Gemini vision pre-read (LL-012)
  *   POST /api/search            -> web search (Tavily/Brave)
@@ -45,14 +48,28 @@ export function lumenRealtimePlugin(env: RealtimeEnv): Plugin {
   return {
     name: 'lumen-realtime',
     configureServer(server) {
-      // Mints a short-lived single-use token and returns it with the session
-      // setup; the browser connects straight to Google with it (ADR-0013).
+      // GET: brain config for the client's fail-fast check. POST: one chat
+      // turn — the conversation lives client-side; the key stays here.
       server.middlewares.use(
-        '/api/live/token',
-        async (_req: Connect.IncomingMessage, res: ServerResponse) => {
+        '/api/chat',
+        async (req: Connect.IncomingMessage, res: ServerResponse) => {
+          if (req.method === 'GET') {
+            sendJson(res, 200, chatConfig(env))
+            return
+          }
+          if (req.method !== 'POST') {
+            sendJson(res, 405, { error: 'Use GET or POST.' })
+            return
+          }
           try {
-            const { status, body } = await createLiveToken(env)
-            sendJson(res, status, body)
+            const body = await readBody(req)
+            const { messages } = JSON.parse(body || '{}') as { messages?: ChatMessage[] }
+            if (!Array.isArray(messages)) {
+              sendJson(res, 400, { error: 'Missing messages array.' })
+              return
+            }
+            const { status, body: out } = await runChatTurn(env, messages)
+            sendJson(res, status, out)
           } catch (err) {
             sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) })
           }

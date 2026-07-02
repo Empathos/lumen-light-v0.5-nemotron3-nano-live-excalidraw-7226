@@ -14,9 +14,9 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       lumenRealtimePlugin({
+        openrouterApiKey: env.OPENROUTER_API_KEY,
+        chatModel: env.NEMOTRON_MODEL,
         geminiApiKey: env.GEMINI_API_KEY,
-        liveModel: env.GEMINI_LIVE_MODEL,
-        liveVoice: env.GEMINI_LIVE_VOICE,
         imageModel: env.GEMINI_IMAGE_MODEL,
         tavilyApiKey: env.TAVILY_API_KEY,
         braveApiKey: env.BRAVE_API_KEY,
@@ -28,22 +28,12 @@ export default defineConfig(({ mode }) => {
     define: {
       'process.env.IS_PREACT': JSON.stringify('false'),
     },
+    // No websocket proxy here: the Nemotron brain talks HTTP to our own /api
+    // endpoints, so the browser never needs a direct third-party connection
+    // (ADR-0014) — VPN-filtered hosts are unaffected by construction.
     server: {
       port: 5180,
       host: true,
-      proxy: {
-        // Dev-only relay for the Gemini Live WebSocket: the browser connects to
-        // this origin and the dev server forwards to Google. Host-side VPNs /
-        // filters (e.g. NordVPN) can black-hole a direct browser connection to
-        // googleapis.com while the dev server's egress is unaffected. The
-        // production build always connects directly (see RealtimeClient).
-        '/live-ws': {
-          target: 'https://generativelanguage.googleapis.com',
-          changeOrigin: true,
-          ws: true,
-          rewrite: (p) => p.replace(/^\/live-ws/, ''),
-        },
-      },
     },
   }
 })

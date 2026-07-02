@@ -16,125 +16,77 @@ export interface RealtimeCallbacks {
   getSessionGrounding?: () => string | null | undefined
 }
 
-/** One BidiGenerateContentServerMessage, loosely typed. */
-interface LiveServerMessage {
-  setupComplete?: Record<string, unknown>
-  serverContent?: {
-    modelTurn?: { parts?: { text?: string; inlineData?: { mimeType?: string; data?: string } }[] }
-    turnComplete?: boolean
-    interrupted?: boolean
-    inputTranscription?: { text?: string }
-    outputTranscription?: { text?: string }
-  }
-  toolCall?: { functionCalls?: { id?: string; name?: string; args?: unknown }[] }
-  toolCallCancellation?: { ids?: string[] }
-  goAway?: { timeLeft?: string }
-  error?: { message?: string }
-  [key: string]: unknown
+/** OpenAI-style chat message; the whole conversation lives client-side. */
+interface ChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  content?: string | null
+  tool_calls?: ToolCall[]
+  tool_call_id?: string
 }
 
-const TOKEN_ENDPOINT = '/api/live/token'
-// Ephemeral tokens only work against the v1alpha constrained endpoint (ADR-0013).
-const LIVE_WS_PATH =
-  '/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained'
+interface ToolCall {
+  id: string
+  type: string
+  function?: { name?: string; arguments?: string }
+}
+
+const CHAT_ENDPOINT = '/api/chat'
+const DESCRIBE_ENDPOINT = '/api/image/describe'
+
+/** Most tool hops one user turn may take before we force a plain reply. */
+const MAX_TOOL_HOPS = 8
+
+/** Keep the client-held history bounded; the canvas is the durable state. */
+const MAX_HISTORY_MESSAGES = 80
 
 /**
- * Where to open the Live WebSocket. Production connects straight to Google
- * (that is the whole point of the ephemeral token). Dev goes through the Vite
- * proxy at /live-ws on this origin, because host-side VPNs/filters (e.g.
- * NordVPN on the Windows host) can black-hole a direct browser connection to
- * googleapis.com while the dev server's own egress works fine.
+ * The question sent to the server-side vision reader when a tool returns a
+ * canvas screenshot: the model is text-only, so pixels become this report
+ * (ADR-0014 — LL-013's "pixels never cross the channel", applied everywhere).
  */
-function liveWsUrl(accessToken: string): string {
-  const query = `?access_token=${encodeURIComponent(accessToken)}`
-  if (import.meta.env.DEV) {
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    return `${proto}://${location.host}/live-ws${LIVE_WS_PATH}${query}`
-  }
-  return `wss://generativelanguage.googleapis.com${LIVE_WS_PATH}${query}`
+const LAYOUT_QUESTION =
+  'This is a whiteboard render. Report the layout precisely: list the visible elements with approximate positions, then call out overlapping shapes, awkward spacing, cut-off or off-screen elements, and connectors that attach to the wrong place. If the layout looks clean, say so. Max 120 words.'
+
+// Minimal Web Speech typings (lib.dom omits SpeechRecognition in some configs).
+interface SpeechRecognitionResultLike {
+  isFinal: boolean
+  0: { transcript: string }
+}
+interface SpeechRecognitionLike {
+  continuous: boolean
+  interimResults: boolean
+  lang: string
+  onresult: ((e: { results: ArrayLike<SpeechRecognitionResultLike> }) => void) | null
+  onend: (() => void) | null
+  onerror: ((e: { error?: string }) => void) | null
+  start: () => void
+  stop: () => void
 }
 
-/** Gemini Live consumes PCM16 mono at 16 kHz and emits PCM16 mono at 24 kHz. */
-const INPUT_SAMPLE_RATE = 16000
-const OUTPUT_SAMPLE_RATE = 24000
-
-/** Batch mic frames to ~128 ms per message so we don't spam the socket. */
-const MIC_CHUNK_SAMPLES = 2048
-
-// Any single WS message this large risks stalling live audio behind it
-// (RISK-001 in its Gemini form) — oversized images degrade to an honest note.
-const MAX_IMAGE_CHARS = 1_000_000
-
 /**
- * Mic capture worklet: converts float32 frames to PCM16 and posts batched
- * buffers to the main thread. Inlined as a Blob URL so the client stays a
- * single self-contained module.
- */
-const CAPTURE_WORKLET_SRC = `
-class LumenPcmCapture extends AudioWorkletProcessor {
-  constructor() {
-    super()
-    this.chunks = []
-    this.length = 0
-  }
-  process(inputs) {
-    const channel = inputs[0] && inputs[0][0]
-    if (channel) {
-      const pcm = new Int16Array(channel.length)
-      for (let i = 0; i < channel.length; i++) {
-        const s = Math.max(-1, Math.min(1, channel[i]))
-        pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff
-      }
-      this.chunks.push(pcm)
-      this.length += pcm.length
-      if (this.length >= ${MIC_CHUNK_SAMPLES}) {
-        const merged = new Int16Array(this.length)
-        let offset = 0
-        for (const c of this.chunks) {
-          merged.set(c, offset)
-          offset += c.length
-        }
-        this.chunks = []
-        this.length = 0
-        this.port.postMessage(merged.buffer, [merged.buffer])
-      }
-    }
-    return true
-  }
-}
-registerProcessor('lumen-pcm-capture', LumenPcmCapture)
-`
-
-/**
- * Browser WebSocket client for the Google Gemini Live API (ADR-0013, LL-014).
+ * Chat-loop client for the NVIDIA Nemotron 3 Nano brain via OpenRouter
+ * (ADR-0014, LL-015). Fourth provider behind the same seam as the OpenAI /
+ * Inworld / Gemini Live clients, so App.tsx and the tool loop are untouched.
  *
- * Flow: fetch an ephemeral token + session setup from our server -> open a
- * WebSocket straight to Google (the token is the only credential the browser
- * ever sees) -> send the setup -> stream mic PCM up / play model PCM down.
- * Both voice and typed text go through the same session and produce the same
- * tool calls. The public seam is identical to the previous Inworld client, so
- * App.tsx and the tool loop are provider-agnostic.
+ * Flow: sendText (typed, or a final speech-recognition transcript) appends a
+ * user message and runs the agentic loop — POST history to our server proxy,
+ * execute any tool_calls via onToolCall, append role:"tool" results, repeat
+ * until a plain assistant message, which is emitted and spoken via the
+ * browser's speechSynthesis. Voice in is the browser's SpeechRecognition;
+ * both degrade gracefully to a text-only session when unavailable.
  */
 export class RealtimeClient {
-  private ws?: WebSocket
   private status: RealtimeStatus = 'idle'
-  // Mic capture graph (16 kHz) and model playback context (24 kHz) are two
-  // separate AudioContexts because they run at different sample rates.
-  private micStream?: MediaStream
-  private micCtx?: AudioContext
-  private playCtx?: AudioContext
-  private playNextTime = 0
-  private playingSources = new Set<AudioBufferSourceNode>()
-  // Transcript accumulators: Gemini streams both transcriptions in fragments;
-  // we emit whole turns like the previous client did.
-  private userTranscript = ''
-  private assistantTranscript = ''
-  // Session re-grounding (BUG-001): computed at connect, sent once as silent
-  // context (turnComplete: false) after setupComplete. Guarded so it can never
-  // block the connect path.
-  private groundingSent = false
-  // Telemetry (BUG-005): send sizes/backpressure, every message kind received,
-  // errors verbatim, and periodic audio counters.
+  private history: ChatMessage[] = []
+  private queue: string[] = []
+  private turnActive = false
+  private closed = false
+  // Voice cascade state
+  private recognition?: SpeechRecognitionLike
+  private voiceOn = false
+  private speaking = false
+  // Telemetry (BUG-005 shape preserved): request sizes, message kinds seen,
+  // errors verbatim, and cumulative usage/latency snapshots.
   private tm = {
     sends: [] as { t: number; type: string; size: number; buffered: number }[],
     events: {} as Record<string, number>,
@@ -142,9 +94,8 @@ export class RealtimeClient {
     errors: [] as { t: number; raw: string }[],
     stats: [] as Record<string, unknown>[],
   }
-  private audioBytesUp = 0
-  private audioBytesDown = 0
-  private statsTimer?: ReturnType<typeof setInterval>
+  private totalTokens = 0
+  private turnCount = 0
 
   constructor(private readonly callbacks: RealtimeCallbacks = {}) {}
 
@@ -160,91 +111,58 @@ export class RealtimeClient {
   async connect(): Promise<void> {
     if (this.status === 'connecting' || this.status === 'connected') return
     this.setStatus('connecting')
-    this.groundingSent = false
-
+    this.closed = false
     try {
-      const tokenRes = await fetch(TOKEN_ENDPOINT)
-      const tokenText = await tokenRes.text()
-      if (!tokenRes.ok) throw new Error(`Token request failed (${tokenRes.status}): ${tokenText}`)
-      const { accessToken, setup } = JSON.parse(tokenText) as {
-        accessToken?: string
-        setup?: Record<string, unknown>
-      }
-      if (!accessToken || !setup) throw new Error('Token response missing accessToken/setup.')
+      const res = await fetch(CHAT_ENDPOINT)
+      const cfg = (await res.json()) as { model?: string; hasKey?: boolean; error?: string }
+      if (!res.ok) throw new Error(cfg.error || `config request failed (${res.status})`)
+      if (!cfg.hasKey) throw new Error('OPENROUTER_API_KEY is not set on the server.')
 
-      // connect() is triggered by a user click, so creating the playback
-      // AudioContext here satisfies browser autoplay policy.
-      this.playCtx = new AudioContext({ sampleRate: OUTPUT_SAMPLE_RATE })
-      this.playNextTime = 0
-
-      const ws = new WebSocket(liveWsUrl(accessToken))
-      this.ws = ws
-
-      ws.addEventListener('open', () => {
-        this.send({ setup })
-      })
-      ws.addEventListener('message', (e: MessageEvent) => {
-        void this.receive(e.data as string | Blob)
-      })
-      // The error event carries no detail; the close event that follows has
-      // Google's code + reason (setup/config errors arrive this way), so all
-      // reporting lives in the close handler.
-      ws.addEventListener('error', () => {
-        console.warn('[lumen telemetry] websocket error event')
-      })
-      ws.addEventListener('close', (e: CloseEvent) => {
-        if (this.status !== 'connecting' && this.status !== 'connected') return
-        const detail = `close ${e.code}${e.reason ? `: ${e.reason}` : ''}`
-        if (e.code !== 1000) {
-          this.tm.errors.push({ t: Date.now(), raw: detail.slice(0, 600) })
-          console.warn('[lumen telemetry]', detail)
-          this.callbacks.onError?.(`Live session ${detail}`)
+      // Session re-grounding (BUG-001): silent context — a system message the
+      // model is never asked to respond to. Guarded so it can't block connect.
+      try {
+        let grounding = this.callbacks.getSessionGrounding?.()
+        if (grounding && grounding.trim()) {
+          if (grounding.length > 8000) grounding = `${grounding.slice(0, 8000)}…`
+          this.history.push({
+            role: 'system',
+            content: `Session re-grounding (current canvas + earlier conversation — context only, do not respond to this):\n\n${grounding}`,
+          })
         }
-        this.cleanup()
-        this.setStatus(e.code === 1000 ? 'closed' : 'error', detail)
-      })
+      } catch {
+        /* non-fatal */
+      }
+
+      this.setStatus('connected', cfg.model)
+      this.startVoice()
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       this.setStatus('error', message)
       this.callbacks.onError?.(message)
-      this.cleanup()
     }
   }
 
-  /** Send a typed message into the same live session; the model responds to it. */
+  /** Send a typed message into the session; the model responds to it. */
   sendText(text: string): boolean {
-    if (!this.isOpen()) return false
-    this.send({
-      clientContent: {
-        turns: [{ role: 'user', parts: [{ text }] }],
-        turnComplete: true,
-      },
-    })
+    if (this.status !== 'connected') return false
+    this.enqueueUserTurn(text)
     return true
   }
 
   /**
-   * Inject an image into the session plus an optional text prompt, and ask for
-   * a response. Gemini Live only accepts inline base64 (GAP-001: Google rejects
-   * http(s) URLs), so data URLs are sent directly and remote URLs are fetched
-   * browser-side first (subject to CORS) — hence fire-and-forget async.
+   * Inject an image plus an optional text prompt. The brain is text-only, so
+   * the image is read server-side (Gemini describe) and the description is
+   * what enters the conversation — same delegation as capture_canvas.
    */
   injectImage(imageUrl: string, text?: string): boolean {
-    if (!this.isOpen()) return false
+    if (this.status !== 'connected') return false
     void (async () => {
       try {
-        const inline = await this.toInlineData(imageUrl)
-        this.send({
-          clientContent: {
-            turns: [
-              {
-                role: 'user',
-                parts: [...(text ? [{ text }] : []), { inlineData: inline }],
-              },
-            ],
-            turnComplete: true,
-          },
-        })
+        const dataURL = imageUrl.startsWith('data:') ? imageUrl : await toDataURL(imageUrl)
+        const description = await this.describe(dataURL, text)
+        this.enqueueUserTurn(
+          `[An image was shared into the session. Automated reading of it: ${description}]${text ? `\n${text}` : ''}`,
+        )
       } catch (err) {
         this.callbacks.onError?.(
           `Could not inject image: ${err instanceof Error ? err.message : String(err)}`,
@@ -255,11 +173,13 @@ export class RealtimeClient {
   }
 
   disconnect(): void {
-    this.cleanup()
+    this.closed = true
+    this.stopVoice()
+    this.queue = []
     this.setStatus('closed')
   }
 
-  /** Full telemetry snapshot — sizes, event counts, errors, audio stats. */
+  /** Full telemetry snapshot — sizes, event counts, errors, usage stats. */
   telemetryDump(): Record<string, unknown> {
     return {
       sends: this.tm.sends.slice(-40),
@@ -271,424 +191,306 @@ export class RealtimeClient {
   }
 
   // -------------------------------------------------------------------------
-  // Outbound
+  // Turn loop
   // -------------------------------------------------------------------------
 
-  private isOpen(): boolean {
-    return !!this.ws && this.ws.readyState === WebSocket.OPEN
+  private enqueueUserTurn(text: string) {
+    this.queue.push(text)
+    void this.drainQueue()
   }
 
-  private send(message: Record<string, unknown>) {
-    if (!this.isOpen() || !this.ws) return
-    const payload = JSON.stringify(message)
-    const kind = Object.keys(message)[0] ?? 'unknown'
-    // Mic audio flows continuously; keep it out of the send ring and count bytes.
-    if (kind === 'realtimeInput') {
-      this.audioBytesUp += payload.length
-    } else {
-      this.tm.sends.push({ t: Date.now(), type: kind, size: payload.length, buffered: this.ws.bufferedAmount })
-      if (this.tm.sends.length > 200) this.tm.sends.shift()
-      if (payload.length > 65_536) {
-        console.warn('[lumen telemetry] large send', payload.length, 'buffered before:', this.ws.bufferedAmount)
+  private async drainQueue() {
+    if (this.turnActive) return
+    this.turnActive = true
+    try {
+      while (this.queue.length > 0 && !this.closed) {
+        const text = this.queue.shift()!
+        this.history.push({ role: 'user', content: text })
+        await this.runTurn()
+      }
+    } finally {
+      this.turnActive = false
+    }
+  }
+
+  private async runTurn() {
+    for (let hop = 0; hop < MAX_TOOL_HOPS; hop++) {
+      this.pruneHistory()
+      let message: ChatMessage
+      try {
+        message = await this.requestCompletion()
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err)
+        this.tm.errors.push({ t: Date.now(), raw: detail.slice(0, 600) })
+        this.callbacks.onError?.(detail)
+        return
+      }
+      this.history.push(message)
+
+      const calls = message.tool_calls ?? []
+      if (calls.length === 0) {
+        const text = (message.content ?? '').trim()
+        this.count('assistant.message')
+        if (text) {
+          this.callbacks.onAssistantTranscript?.(text)
+          this.speak(text)
+        }
+        return
+      }
+
+      // Say any preamble that rode along with the tool calls ("let me check").
+      const preamble = (message.content ?? '').trim()
+      if (preamble) {
+        this.callbacks.onAssistantTranscript?.(preamble)
+        this.speak(preamble)
+      }
+
+      for (const call of calls) {
+        this.count('toolCall')
+        this.history.push(await this.executeToolCall(call))
       }
     }
-    this.ws.send(payload)
-  }
-
-  /** Wait for the socket's send buffer to drain (backpressure guard, BUG-005). */
-  private async drainChannel(maxMs = 4000): Promise<number> {
-    const start = Date.now()
-    while (this.ws && this.ws.bufferedAmount > 0 && Date.now() - start < maxMs) {
-      await new Promise((r) => setTimeout(r, 50))
-    }
-    return Date.now() - start
-  }
-
-  private sendAudioChunk(buffer: ArrayBuffer) {
-    if (!this.isOpen()) return
-    this.send({
-      realtimeInput: {
-        audio: { data: toBase64(buffer), mimeType: `audio/pcm;rate=${INPUT_SAMPLE_RATE}` },
-      },
+    // Hop budget exhausted: ask for a wrap-up without tools next request.
+    this.history.push({
+      role: 'system',
+      content:
+        'Tool budget for this turn is exhausted. Reply to the user in plain words now, without calling any tool.',
     })
-  }
-
-  private async toInlineData(imageUrl: string): Promise<{ mimeType: string; data: string }> {
-    const m = imageUrl.match(/^data:(image\/[\w+.-]+);base64,(.+)$/)
-    if (m) return { mimeType: m[1], data: m[2] }
-    const res = await fetch(imageUrl)
-    if (!res.ok) throw new Error(`image fetch failed (${res.status})`)
-    const mimeType = res.headers.get('content-type')?.split(';')[0] || 'image/png'
-    return { mimeType, data: toBase64(await res.arrayBuffer()) }
-  }
-
-  // -------------------------------------------------------------------------
-  // Inbound
-  // -------------------------------------------------------------------------
-
-  private async receive(data: string | Blob) {
-    const raw = typeof data === 'string' ? data : await data.text()
-    let msg: LiveServerMessage
     try {
-      msg = JSON.parse(raw) as LiveServerMessage
-    } catch {
-      return
-    }
-
-    // Telemetry: count message kinds; keep a raw ring of recent non-audio
-    // messages; error-ish messages are kept verbatim.
-    const kind = messageKind(msg)
-    this.tm.events[kind] = (this.tm.events[kind] ?? 0) + 1
-    if (kind !== 'serverContent.audio') {
-      this.tm.lastEvents.push({ t: Date.now(), type: kind, raw: raw.slice(0, 400) })
-      if (this.tm.lastEvents.length > 60) this.tm.lastEvents.shift()
-    }
-    if (msg.error || msg.goAway) {
-      this.tm.errors.push({ t: Date.now(), raw: raw.slice(0, 600) })
-      console.warn('[lumen telemetry] error-ish message:', raw.slice(0, 300))
-    }
-
-    if (msg.setupComplete) {
-      // The session is configured and live. Mark connected BEFORE any grounding
-      // or mic work so the session is always usable.
-      this.setStatus('connected')
-      this.startStatsSampler()
-      this.flushGrounding()
-      void this.startMic()
-      return
-    }
-
-    if (msg.toolCall?.functionCalls) {
-      for (const call of msg.toolCall.functionCalls) {
-        await this.handleFunctionCall(call)
+      const closing = await this.requestCompletion()
+      this.history.push(closing)
+      const text = (closing.content ?? '').trim()
+      if (text) {
+        this.callbacks.onAssistantTranscript?.(text)
+        this.speak(text)
       }
-      return
-    }
-
-    if (msg.toolCallCancellation) {
-      // The model withdrew tool calls (usually because the user barged in).
-      // Our tools are fast and idempotent-by-replacement, so just log it.
-      console.info('[lumen tool] cancelled:', msg.toolCallCancellation.ids)
-      return
-    }
-
-    const content = msg.serverContent
-    if (!content) {
-      if (msg.error) this.callbacks.onError?.(msg.error.message ?? 'Live session error')
-      return
-    }
-
-    if (content.interrupted) {
-      // The user barged in: silence everything we had queued and emit whatever
-      // the assistant actually got to say.
-      this.flushPlayback()
-      this.emitAssistantTranscript()
-      return
-    }
-
-    if (content.inputTranscription?.text) {
-      this.userTranscript += content.inputTranscription.text
-    }
-    if (content.outputTranscription?.text) {
-      // Model output beginning means the user's turn ended — emit it first so
-      // the conversation log keeps its natural order.
-      this.emitUserTranscript()
-      this.assistantTranscript += content.outputTranscription.text
-    }
-
-    for (const part of content.modelTurn?.parts ?? []) {
-      const inline = part.inlineData
-      if (inline?.data && (inline.mimeType ?? '').startsWith('audio/pcm')) {
-        this.audioBytesDown += inline.data.length
-        this.emitUserTranscript()
-        this.playAudioChunk(inline.data, inline.mimeType)
-      }
-    }
-
-    if (content.turnComplete) {
-      this.emitUserTranscript()
-      this.emitAssistantTranscript()
+    } catch (err) {
+      this.callbacks.onError?.(err instanceof Error ? err.message : String(err))
     }
   }
 
-  private emitUserTranscript() {
-    const text = this.userTranscript.trim()
-    this.userTranscript = ''
-    if (text) this.callbacks.onUserTranscript?.(text)
+  private async requestCompletion(): Promise<ChatMessage> {
+    const payload = JSON.stringify({ messages: this.history })
+    this.tm.sends.push({ t: Date.now(), type: 'chat', size: payload.length, buffered: this.queue.length })
+    if (this.tm.sends.length > 200) this.tm.sends.shift()
+
+    const started = Date.now()
+    const res = await fetch(CHAT_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+    })
+    const data = (await res.json().catch(() => ({}))) as {
+      message?: ChatMessage
+      usage?: { total_tokens?: number }
+      error?: string
+    }
+    if (!res.ok || data.error) throw new Error(data.error || `chat request failed (${res.status})`)
+    if (!data.message) throw new Error('chat response had no message')
+
+    this.turnCount += 1
+    this.totalTokens += data.usage?.total_tokens ?? 0
+    this.tm.stats.push({
+      t: Date.now(),
+      ms: Date.now() - started,
+      turns: this.turnCount,
+      totalTokens: this.totalTokens,
+    })
+    if (this.tm.stats.length > 120) this.tm.stats.shift()
+    this.tm.lastEvents.push({
+      t: Date.now(),
+      type: data.message.tool_calls?.length ? 'assistant.tool_calls' : 'assistant.message',
+      raw: JSON.stringify(data.message).slice(0, 400),
+    })
+    if (this.tm.lastEvents.length > 60) this.tm.lastEvents.shift()
+
+    // Keep only the fields the API needs back; strip provider extras.
+    const { role, content, tool_calls } = data.message
+    return {
+      role: role ?? 'assistant',
+      content: content ?? '',
+      ...(tool_calls?.length ? { tool_calls } : {}),
+    }
   }
 
-  private emitAssistantTranscript() {
-    const text = this.assistantTranscript.trim()
-    this.assistantTranscript = ''
-    if (text) this.callbacks.onAssistantTranscript?.(text)
-  }
-
-  /**
-   * Inject the session re-grounding (BUG-001) exactly once, as silent context:
-   * a user turn with turnComplete false informs the next reply without
-   * triggering one. Capped + guarded so it can never disrupt the session.
-   */
-  private flushGrounding() {
-    if (this.groundingSent) return
-    this.groundingSent = true
-    let text: string | null | undefined
+  private async executeToolCall(call: ToolCall): Promise<ChatMessage> {
+    const name = call.function?.name ?? ''
+    let args: unknown = {}
     try {
-      text = this.callbacks.getSessionGrounding?.()
+      args = call.function?.arguments ? JSON.parse(call.function.arguments) : {}
     } catch {
-      return
+      args = {}
     }
-    if (!text || !text.trim()) return
-    if (text.length > 8000) text = `${text.slice(0, 8000)}…`
-    try {
-      this.send({
-        clientContent: {
-          turns: [{ role: 'user', parts: [{ text }] }],
-          turnComplete: false,
-        },
-      })
-    } catch {
-      /* non-fatal: the session still works without the grounding */
-    }
-  }
-
-  private async handleFunctionCall(call: { id?: string; name?: string; args?: unknown }) {
-    const { id, name } = call
-    if (!id || !name) return
-    const args = call.args ?? {}
 
     let result: unknown = { ok: true }
     console.info('[lumen tool]', name, JSON.stringify(args).slice(0, 200))
     try {
-      result = (await this.callbacks.onToolCall?.(name, args, id)) ?? { ok: true }
+      result = (await this.callbacks.onToolCall?.(name, args, call.id)) ?? { ok: true }
     } catch (err) {
       result = { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
 
-    // A tool may return an `image` data URL (e.g. capture_canvas). The function
-    // response itself must be a plain JSON object, so we strip the image out
-    // and attach it separately as inline image data the model can actually see.
-    let image: string | undefined
+    // A tool may return an `image` data URL (capture_canvas). The brain cannot
+    // see, so the pixels are read server-side and the report text replaces
+    // them in the tool result (ADR-0014).
     if (result && typeof result === 'object' && 'image' in result) {
       const record = result as Record<string, unknown>
-      if (typeof record.image === 'string') image = record.image
+      const image = typeof record.image === 'string' ? record.image : undefined
       delete record.image
-    }
-    const response: Record<string, unknown> =
-      result && typeof result === 'object' && !Array.isArray(result)
-        ? (result as Record<string, unknown>)
-        : { result }
-
-    console.info('[lumen tool result]', name, image ? `(+image ${image.length} chars)` : '', JSON.stringify(response).slice(0, 200))
-
-    if (image && image.length > MAX_IMAGE_CHARS) {
-      // Never push an oversized payload into the channel — it stalls live audio
-      // (RISK-001). The model gets an honest note instead of silence.
-      console.warn('[lumen tool] image too large for channel, dropped:', image.length)
-      image = undefined
-      this.send({
-        clientContent: {
-          turns: [
-            {
-              role: 'user',
-              parts: [{ text: '[AUTOMATED SYSTEM MESSAGE] The image from your tool call was too large to deliver. Tell the user plainly that you could not see it clearly this time.' }],
-            },
-          ],
-          turnComplete: false,
-        },
-      })
-    }
-    if (image) {
-      // Deliver the pixels BEFORE the tool response so they are already in
-      // context when the model continues its turn. Backpressure guard (BUG-005):
-      // let the socket drain around the large message so it never competes with
-      // live audio.
-      const inline = await this.toInlineData(image).catch(() => undefined)
-      if (inline) {
-        const preDrain = await this.drainChannel()
-        this.send({
-          clientContent: {
-            turns: [
-              {
-                role: 'user',
-                parts: [
-                  {
-                    text: '[AUTOMATED SYSTEM MESSAGE — not from the user] This image is the output of your visual tool call (capture_canvas or look_at_item), generated automatically by the app. The user did NOT send it; do not thank them or mention screenshots being shared. If it is the whole canvas, silently check layout (overlaps, spacing, cut-off elements, misrouted connectors) and redraw if needed. If it is a single item you looked at, read it closely and answer the user from what it actually shows.',
-                  },
-                  { inlineData: inline },
-                ],
-              },
-            ],
-            turnComplete: false,
-          },
-        })
-        const postDrain = await this.drainChannel(8000)
-        console.info('[lumen telemetry] image send drain ms — before:', preDrain, 'after:', postDrain)
+      if (image) {
+        try {
+          record.rendered_layout_report = await this.describe(image, LAYOUT_QUESTION)
+        } catch (err) {
+          record.rendered_layout_report_error =
+            err instanceof Error ? err.message : 'layout read failed'
+        }
       }
     }
 
-    // The model resumes its turn on receiving the function response — there is
-    // no separate response.create step in the Live protocol.
-    this.send({
-      toolResponse: {
-        functionResponses: [{ id, name, response }],
-      },
+    console.info('[lumen tool result]', name, JSON.stringify(result).slice(0, 200))
+    return {
+      role: 'tool',
+      tool_call_id: call.id,
+      content: typeof result === 'string' ? result : JSON.stringify(result),
+    }
+  }
+
+  private async describe(dataURL: string, question?: string): Promise<string> {
+    const res = await fetch(DESCRIBE_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dataURL, question }),
     })
+    const data = (await res.json().catch(() => ({}))) as { description?: string; error?: string }
+    if (!res.ok || !data.description) throw new Error(data.error || `describe failed (${res.status})`)
+    return data.description
+  }
+
+  /**
+   * Bound the history: keep leading system context (grounding) plus the most
+   * recent messages, never letting a role:"tool" result lead without its
+   * assistant tool_calls message (an orphaned tool message is an API error).
+   */
+  private pruneHistory() {
+    if (this.history.length <= MAX_HISTORY_MESSAGES) return
+    const head = this.history.filter((m) => m.role === 'system')
+    let tail = this.history.slice(-(MAX_HISTORY_MESSAGES - head.length))
+    while (tail.length && tail[0].role === 'tool') tail = tail.slice(1)
+    this.history = [...head, ...tail]
+  }
+
+  private count(kind: string) {
+    this.tm.events[kind] = (this.tm.events[kind] ?? 0) + 1
   }
 
   // -------------------------------------------------------------------------
-  // Audio
+  // Voice cascade (Web Speech API) — best effort; text always works without it
   // -------------------------------------------------------------------------
 
-  private async startMic() {
+  private startVoice() {
+    type SRCtor = new () => SpeechRecognitionLike
+    const w = window as unknown as { SpeechRecognition?: SRCtor; webkitSpeechRecognition?: SRCtor }
+    const Ctor = w.SpeechRecognition ?? w.webkitSpeechRecognition
+    if (!Ctor) {
+      this.callbacks.onMic?.(false)
+      return
+    }
     try {
-      const mic = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
-      })
-      this.micStream = mic
-      // A dedicated 16 kHz context makes the browser do the resampling for us.
-      const ctx = new AudioContext({ sampleRate: INPUT_SAMPLE_RATE })
-      this.micCtx = ctx
-      const workletUrl = URL.createObjectURL(
-        new Blob([CAPTURE_WORKLET_SRC], { type: 'application/javascript' }),
-      )
-      try {
-        await ctx.audioWorklet.addModule(workletUrl)
-      } finally {
-        URL.revokeObjectURL(workletUrl)
+      const rec = new Ctor()
+      rec.continuous = true
+      rec.interimResults = false
+      rec.lang = 'en-US'
+      rec.onresult = (e) => {
+        const last = e.results[e.results.length - 1]
+        if (!last?.isFinal) return
+        const transcript = last[0]?.transcript?.trim()
+        // Ignore anything "heard" while we are speaking (self-echo guard).
+        if (!transcript || this.speaking) return
+        this.callbacks.onUserTranscript?.(transcript)
+        this.enqueueUserTurn(transcript)
       }
-      const source = ctx.createMediaStreamSource(mic)
-      const capture = new AudioWorkletNode(ctx, 'lumen-pcm-capture')
-      capture.port.onmessage = (e: MessageEvent) => this.sendAudioChunk(e.data as ArrayBuffer)
-      source.connect(capture)
-      // Keep the graph pulled without ever being audible.
-      const sink = ctx.createGain()
-      sink.gain.value = 0
-      capture.connect(sink)
-      sink.connect(ctx.destination)
+      rec.onend = () => {
+        // Chrome ends continuous recognition every ~60s; restart while live.
+        if (this.voiceOn && !this.closed && !this.speaking) {
+          try {
+            rec.start()
+          } catch {
+            /* already restarting */
+          }
+        }
+      }
+      rec.onerror = (e) => {
+        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+          this.voiceOn = false
+          this.callbacks.onMic?.(false)
+        }
+      }
+      rec.start()
+      this.recognition = rec
+      this.voiceOn = true
       this.callbacks.onMic?.(true)
     } catch {
-      // No mic access: still receive the model's audio and drive via text.
       this.callbacks.onMic?.(false)
     }
   }
 
-  /** Decode one base64 PCM16 chunk and schedule it gapless after the last one. */
-  private playAudioChunk(b64: string, mimeType?: string) {
-    const ctx = this.playCtx
-    if (!ctx) return
+  private stopVoice() {
+    this.voiceOn = false
     try {
-      if (ctx.state === 'suspended') void ctx.resume()
-      const rate = Number(mimeType?.match(/rate=(\d+)/)?.[1]) || OUTPUT_SAMPLE_RATE
-      const binary = atob(b64)
-      const byteLen = binary.length
-      const bytes = new Uint8Array(byteLen)
-      for (let i = 0; i < byteLen; i++) bytes[i] = binary.charCodeAt(i)
-
-      const sampleCount = Math.floor(byteLen / 2)
-      if (sampleCount === 0) return
-      const view = new DataView(bytes.buffer)
-      const samples = new Float32Array(sampleCount)
-      for (let i = 0; i < sampleCount; i++) {
-        // PCM16 little-endian -> normalized float.
-        samples[i] = view.getInt16(i * 2, true) / 32768
-      }
-
-      const buffer = ctx.createBuffer(1, sampleCount, rate)
-      buffer.copyToChannel(samples, 0)
-      const source = ctx.createBufferSource()
-      source.buffer = buffer
-      source.connect(ctx.destination)
-      this.playingSources.add(source)
-      source.onended = () => this.playingSources.delete(source)
-
-      const startAt = Math.max(ctx.currentTime, this.playNextTime)
-      source.start(startAt)
-      this.playNextTime = startAt + buffer.duration
+      this.recognition?.stop()
     } catch {
-      /* drop malformed chunk */
+      /* noop */
     }
+    this.recognition = undefined
+    try {
+      window.speechSynthesis?.cancel()
+    } catch {
+      /* noop */
+    }
+    this.speaking = false
   }
 
-  /** Stop everything queued for playback (user barged in / disconnect). */
-  private flushPlayback() {
-    for (const source of this.playingSources) {
-      try {
-        source.stop()
-      } catch {
-        /* already stopped */
+  /** Speak a reply with the browser voice, pausing recognition meanwhile. */
+  private speak(text: string) {
+    const synth = window.speechSynthesis
+    if (!synth || !this.voiceOn) return
+    try {
+      const utterance = new SpeechSynthesisUtterance(text)
+      utterance.rate = 1.05
+      const done = () => {
+        this.speaking = false
+        if (this.voiceOn && !this.closed) {
+          try {
+            this.recognition?.start()
+          } catch {
+            /* already running */
+          }
+        }
       }
-    }
-    this.playingSources.clear()
-    this.playNextTime = 0
-  }
-
-  private startStatsSampler() {
-    clearInterval(this.statsTimer)
-    this.statsTimer = setInterval(() => {
-      this.tm.stats.push({
-        t: Date.now(),
-        audioBytesUp: this.audioBytesUp,
-        audioBytesDown: this.audioBytesDown,
-        buffered: this.ws?.bufferedAmount ?? 0,
-        queuedPlayback: this.playingSources.size,
-      })
-      if (this.tm.stats.length > 120) this.tm.stats.shift()
-    }, 2000)
-  }
-
-  private cleanup() {
-    clearInterval(this.statsTimer)
-    this.flushPlayback()
-    this.micStream?.getTracks().forEach((t) => t.stop())
-    this.micStream = undefined
-    if (this.micCtx) {
-      void this.micCtx.close().catch(() => {})
-      this.micCtx = undefined
-    }
-    if (this.playCtx) {
-      void this.playCtx.close().catch(() => {})
-      this.playCtx = undefined
-    }
-    if (this.ws) {
-      const ws = this.ws
-      this.ws = undefined
+      utterance.onend = done
+      utterance.onerror = done
+      this.speaking = true
       try {
-        ws.close(1000)
+        this.recognition?.stop()
       } catch {
         /* noop */
       }
+      synth.speak(utterance)
+    } catch {
+      this.speaking = false
     }
-    this.userTranscript = ''
-    this.assistantTranscript = ''
   }
 }
 
-/** Which kind of server message is this, for telemetry counting. */
-function messageKind(msg: LiveServerMessage): string {
-  if (msg.setupComplete) return 'setupComplete'
-  if (msg.toolCall) return 'toolCall'
-  if (msg.toolCallCancellation) return 'toolCallCancellation'
-  if (msg.goAway) return 'goAway'
-  if (msg.serverContent) {
-    const c = msg.serverContent
-    if (c.modelTurn?.parts?.some((p) => p.inlineData)) return 'serverContent.audio'
-    if (c.interrupted) return 'serverContent.interrupted'
-    if (c.turnComplete) return 'serverContent.turnComplete'
-    if (c.inputTranscription) return 'serverContent.inputTranscription'
-    if (c.outputTranscription) return 'serverContent.outputTranscription'
-    return 'serverContent'
-  }
-  if (msg.error) return 'error'
-  return Object.keys(msg)[0] ?? 'unknown'
-}
-
-/** ArrayBuffer -> base64 without blowing the call stack on large buffers. */
-function toBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer)
-  let binary = ''
-  const CHUNK = 0x8000
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
-  }
-  return btoa(binary)
+/** Fetch a remote image in the browser and re-encode as a data URL. */
+async function toDataURL(url: string): Promise<string> {
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`image fetch failed (${res.status})`)
+  const blob = await res.blob()
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(new Error('image read failed'))
+    reader.readAsDataURL(blob)
+  })
 }
