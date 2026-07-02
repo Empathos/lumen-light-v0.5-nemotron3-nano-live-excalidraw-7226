@@ -19,7 +19,8 @@ Backfilled 2026-07-02 from the sessions of 2026-06-27 → 2026-07-02.
 | LL-009 | Offline browser smoke harness | — | built | | [TESTING](TESTING.md) | theme: Quality; npm run smoke:offline gates typed canvas loop (commit 225eb9f) |
 | LL-010 | Selection and viewport as focus | IDEA-007 | built | ++++ | [summarizeScene](../src/canvas/summarizeScene.ts) | U: "this one" resolves; C: appState read; X: bytes; M: deterministic — live voice check pending (provider silent 14:00+) |
 | LL-011 | Look closely at one item | IDEA-003 | built | ++++ | [zoomItem](../src/canvas/zoomItem.ts) | verified live: read real Wikipedia headline from pixels; X: budget 250K chars after 609K payload silenced channel (RISK-001 confirmed twice) |
-| RISK-003 | Some sites block thum.io capture | LL-007 | concept | | [KNOWN_ISSUES](KNOWN_ISSUES.md) | observed live 2026-07-02: MSN retry + Heidelberg tourism refused; Wikipedia fine |
+| LL-012 | Pre-read images at placement | IDEA-010 | built | +++0 | [annotateImage](../src/canvas/annotateImage.ts) | background Gemini read at drop time, stored as ai.description tag; verified live: transcribed generated sign exactly; M: note-first answering needs field test |
+| RISK-003 | Some sites block thum.io capture | LL-007 | concept | | [KNOWN_ISSUES](KNOWN_ISSUES.md) | observed live 2026-07-02: MSN retry + Heidelberg refused; later Wikipedia 403 too — likely rate limiting from heavy testing |
 | RISK-001 | Big payloads kill voice channel | — | concept | | [ADR-0011](decisions/ADR-0011-visual-grounding-on-resume.md) | theme: Physics; X player defects ≥ ~256KB per message |
 | RISK-002 | Storage quota silently stops persistence | — | concept | | [ADR-0012](decisions/ADR-0012-canvas-agnostic-inventory.md) | theme: Persistence; screenshot images are megabytes; quota ~5MB; saveScene swallows failure |
 | GAP-002 | Surface and survive storage-quota failures | RISK-002 | built | ++0+ | [persistence](../src/canvas/persistence.ts), [test](../src/canvas/persistence.test.ts) | warns on failed save; falls back to slim scene without files |
@@ -35,7 +36,7 @@ Backfilled 2026-07-02 from the sessions of 2026-06-27 → 2026-07-02.
 | IDEA-004 | Take-me-to board navigation | LL-005 | idea | +++0 | | U: conversational navigation; C: one scrollToContent call; X: bytes; M: label matching may miss |
 | IDEA-005 | Model annotates items with tags | LL-005 | idea | 0+0? | | C: write path exists; U: unclear until retrieval consumes tags; M: tagging quality unknown |
 | IDEA-006 | Save board to Excalidraw library | LL-004 | idea | | | visible stash before clear; binary round-trip unverified |
-| IDEA-010 | Pre-read images at placement | LL-011 | idea | | | buffered vision: background describe+OCR when image lands, stored as ai.* tags; answers become instant text |
+| IDEA-010 | Pre-read images at placement | LL-011 | superseded | | | graduated to LL-012 |
 | IDEA-008 | Host canvas images on GCS | GAP-001 | idea | | | gs:// URIs are the sanctioned Google path |
 | IDEA-009 | Non-Google router model for vision | GAP-001 | idea | | | the http(s) refusal is Google-specific per the error |
 | IDEA-007 | Selection and viewport as focus | LL-005 | superseded | ++++ | | graduated to LL-010 |

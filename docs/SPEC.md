@@ -154,6 +154,17 @@ derived-only and cannot be spoofed by stored data). The schema
 only file allowed to. Future per-asset vision, board navigation, and
 annotation tools address the board through this layer.
 
+### Buffered vision — pre-read at placement (LL-012)
+
+When `screenshot_website` or `generate_image` places an image, the client
+fires a background `/api/image/describe` call (Gemini vision, server-side,
+HTTP — zero data-channel traffic): a literal transcription-first note of what
+the image contains, stored on the element as an `ai.description` tag (so it
+persists with the scene and is computed once, ever). `read_canvas` surfaces
+the notes ("Image contents (pre-read, literal): …", bounded), making most
+"what does it say?" questions instant text answers. `look_at_item` remains the
+deep read when the note isn't enough.
+
 ### `look_at_item` (per-item vision)
 
 `{ target }`. Returns ONE board item as an image at full sharpness: for
