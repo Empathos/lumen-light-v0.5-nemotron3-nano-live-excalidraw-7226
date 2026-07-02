@@ -16,9 +16,11 @@ import { truncate, hostOf } from '../lib/text'
  * they exceed the size budget, never up.
  */
 
-// ~1MB of base64 ≈ ~750KB binary — proven transit size for capture_canvas.
-const MAX_DATAURL_CHARS = 1_400_000
-const MAX_EDGE = 1600
+// The WebRTC data channel rejects large messages (~256KB typical ceiling —
+// RISK-001; verified live: a 609K-char data URL silenced the session). Budget
+// well under it: ~250K chars ≈ ~190KB binary. JPEG keeps screenshots legible.
+const MAX_DATAURL_CHARS = 250_000
+const MAX_EDGE = 1400
 
 function describeNode(kind: string, label?: string): string {
   if (kind === 'screenshot') return `the website screenshot${label ? ` of ${hostOf(label)}` : ''}`

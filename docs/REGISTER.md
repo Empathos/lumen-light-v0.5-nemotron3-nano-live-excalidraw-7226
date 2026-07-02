@@ -18,7 +18,7 @@ Backfilled 2026-07-02 from the sessions of 2026-06-27 → 2026-07-02.
 | LL-008 | Markdown session export artifact | LL-002 | built | | [sessionExport](../src/sessionExport.ts) | leave-with artifact from inventory + transcript (commit 71088ff) |
 | LL-009 | Offline browser smoke harness | — | built | | [TESTING](TESTING.md) | theme: Quality; npm run smoke:offline gates typed canvas loop (commit 225eb9f) |
 | LL-010 | Selection and viewport as focus | IDEA-007 | built | ++++ | [summarizeScene](../src/canvas/summarizeScene.ts) | U: "this one" resolves; C: appState read; X: bytes; M: deterministic — live voice check pending (provider silent 14:00+) |
-| LL-011 | Look closely at one item | IDEA-003 | built | +++0 | [zoomItem](../src/canvas/zoomItem.ts) | returns ORIGINAL image bytes (canvas shows shrunk copy); resolver precedence selection>label>kind; M: live voice check pending |
+| LL-011 | Look closely at one item | IDEA-003 | built | ++++ | [zoomItem](../src/canvas/zoomItem.ts) | verified live: read real Wikipedia headline from pixels; X: budget 250K chars after 609K payload silenced channel (RISK-001 confirmed twice) |
 | RISK-003 | Some sites block thum.io capture | LL-007 | concept | | [KNOWN_ISSUES](KNOWN_ISSUES.md) | observed live 2026-07-02: MSN retry + Heidelberg tourism refused; Wikipedia fine |
 | RISK-001 | Big payloads kill voice channel | — | concept | | [ADR-0011](decisions/ADR-0011-visual-grounding-on-resume.md) | theme: Physics; X player defects ≥ ~256KB per message |
 | RISK-002 | Storage quota silently stops persistence | — | concept | | [ADR-0012](decisions/ADR-0012-canvas-agnostic-inventory.md) | theme: Persistence; screenshot images are megabytes; quota ~5MB; saveScene swallows failure |

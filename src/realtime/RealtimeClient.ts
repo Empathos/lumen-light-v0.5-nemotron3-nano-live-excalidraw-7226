@@ -327,6 +327,7 @@ export class RealtimeClient {
     }
 
     let result: unknown = { ok: true }
+    console.info('[lumen tool]', name, JSON.stringify(args).slice(0, 200))
     try {
       result = (await this.callbacks.onToolCall?.(name, args, callId)) ?? { ok: true }
     } catch (err) {
@@ -343,6 +344,7 @@ export class RealtimeClient {
       delete record.image
     }
 
+    console.info('[lumen tool result]', name, image ? `(+image ${image.length} chars)` : '', JSON.stringify(result).slice(0, 200))
     this.send({
       type: 'conversation.item.create',
       item: {
@@ -352,6 +354,20 @@ export class RealtimeClient {
       },
     })
 
+    if (image && image.length > 300_000) {
+      // Never push an oversized payload into the channel — it kills the call
+      // (RISK-001). The model gets an honest note instead of silence.
+      console.warn('[lumen tool] image too large for channel, dropped:', image.length)
+      image = undefined
+      this.send({
+        type: 'conversation.item.create',
+        item: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: '[AUTOMATED SYSTEM MESSAGE] The image from your tool call was too large to deliver. Tell the user plainly that you could not see it clearly this time.' }],
+        },
+      })
+    }
     if (image) {
       this.send({
         type: 'conversation.item.create',
