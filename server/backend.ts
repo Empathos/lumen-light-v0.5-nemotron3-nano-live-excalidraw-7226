@@ -617,26 +617,33 @@ export async function createLiveToken(env: RealtimeEnv): Promise<{
   if (!env.geminiApiKey) {
     return { status: 500, body: { error: 'GEMINI_API_KEY is not set.' } }
   }
-  try {
-    // Ephemeral tokens are a v1alpha-only surface.
-    const ai = new GoogleGenAI({
-      apiKey: env.geminiApiKey,
-      httpOptions: { apiVersion: 'v1alpha' },
-    })
-    const token = await ai.authTokens.create({
-      config: {
-        uses: 1,
-        expireTime: new Date(Date.now() + 30 * 60_000).toISOString(),
-        newSessionExpireTime: new Date(Date.now() + 60_000).toISOString(),
-      },
-    })
-    if (!token.name) {
-      return { status: 502, body: { error: 'Token mint returned no token name.' } }
+  // Ephemeral tokens are a v1alpha-only surface.
+  const ai = new GoogleGenAI({
+    apiKey: env.geminiApiKey,
+    httpOptions: { apiVersion: 'v1alpha' },
+  })
+  // One retry: the mint is a single cheap POST, and a flapping host network
+  // (VPN toggles, dead IPv6 routes) can transiently fail exactly this fetch.
+  let lastError = 'token mint failed'
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 400))
+    try {
+      const token = await ai.authTokens.create({
+        config: {
+          uses: 1,
+          expireTime: new Date(Date.now() + 30 * 60_000).toISOString(),
+          newSessionExpireTime: new Date(Date.now() + 60_000).toISOString(),
+        },
+      })
+      if (!token.name) {
+        return { status: 502, body: { error: 'Token mint returned no token name.' } }
+      }
+      return { status: 200, body: { accessToken: token.name, setup: buildLiveSetup(env) } }
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err)
     }
-    return { status: 200, body: { accessToken: token.name, setup: buildLiveSetup(env) } }
-  } catch (err) {
-    return { status: 502, body: { error: err instanceof Error ? err.message : String(err) } }
   }
+  return { status: 502, body: { error: lastError } }
 }
 
 /** generate_image backend: prompt -> Google Gemini ("Nano Banana") -> data URL. */
