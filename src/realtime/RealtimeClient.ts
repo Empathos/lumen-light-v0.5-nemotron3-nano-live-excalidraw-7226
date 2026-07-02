@@ -35,8 +35,24 @@ interface LiveServerMessage {
 
 const TOKEN_ENDPOINT = '/api/live/token'
 // Ephemeral tokens only work against the v1alpha constrained endpoint (ADR-0013).
-const LIVE_WS_URL =
-  'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained'
+const LIVE_WS_PATH =
+  '/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained'
+
+/**
+ * Where to open the Live WebSocket. Production connects straight to Google
+ * (that is the whole point of the ephemeral token). Dev goes through the Vite
+ * proxy at /live-ws on this origin, because host-side VPNs/filters (e.g.
+ * NordVPN on the Windows host) can black-hole a direct browser connection to
+ * googleapis.com while the dev server's own egress works fine.
+ */
+function liveWsUrl(accessToken: string): string {
+  const query = `?access_token=${encodeURIComponent(accessToken)}`
+  if (import.meta.env.DEV) {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+    return `${proto}://${location.host}/live-ws${LIVE_WS_PATH}${query}`
+  }
+  return `wss://generativelanguage.googleapis.com${LIVE_WS_PATH}${query}`
+}
 
 /** Gemini Live consumes PCM16 mono at 16 kHz and emits PCM16 mono at 24 kHz. */
 const INPUT_SAMPLE_RATE = 16000
@@ -161,7 +177,7 @@ export class RealtimeClient {
       this.playCtx = new AudioContext({ sampleRate: OUTPUT_SAMPLE_RATE })
       this.playNextTime = 0
 
-      const ws = new WebSocket(`${LIVE_WS_URL}?access_token=${encodeURIComponent(accessToken)}`)
+      const ws = new WebSocket(liveWsUrl(accessToken))
       this.ws = ws
 
       ws.addEventListener('open', () => {
@@ -170,23 +186,22 @@ export class RealtimeClient {
       ws.addEventListener('message', (e: MessageEvent) => {
         void this.receive(e.data as string | Blob)
       })
+      // The error event carries no detail; the close event that follows has
+      // Google's code + reason (setup/config errors arrive this way), so all
+      // reporting lives in the close handler.
       ws.addEventListener('error', () => {
-        if (this.status === 'connecting' || this.status === 'connected') {
-          this.setStatus('error', 'websocket error')
-          this.callbacks.onError?.('Live session socket error')
-        }
+        console.warn('[lumen telemetry] websocket error event')
       })
       ws.addEventListener('close', (e: CloseEvent) => {
-        // Google closes with a reason string on setup/config errors — surface it.
-        if (this.status === 'connecting' || this.status === 'connected') {
-          const detail = e.reason ? `closed: ${e.reason}` : 'closed'
-          if (e.code !== 1000) {
-            this.tm.errors.push({ t: Date.now(), raw: `close ${e.code} ${e.reason}`.slice(0, 600) })
-            this.callbacks.onError?.(`Live session closed (${e.code})${e.reason ? `: ${e.reason}` : ''}`)
-          }
-          this.cleanup()
-          this.setStatus('closed', detail)
+        if (this.status !== 'connecting' && this.status !== 'connected') return
+        const detail = `close ${e.code}${e.reason ? `: ${e.reason}` : ''}`
+        if (e.code !== 1000) {
+          this.tm.errors.push({ t: Date.now(), raw: detail.slice(0, 600) })
+          console.warn('[lumen telemetry]', detail)
+          this.callbacks.onError?.(`Live session ${detail}`)
         }
+        this.cleanup()
+        this.setStatus(e.code === 1000 ? 'closed' : 'error', detail)
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)

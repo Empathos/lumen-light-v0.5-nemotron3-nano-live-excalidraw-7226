@@ -25,6 +25,19 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5180,
       host: true,
+      proxy: {
+        // Dev-only relay for the Gemini Live WebSocket: the browser connects to
+        // this origin and the dev server forwards to Google. Host-side VPNs /
+        // filters (e.g. NordVPN) can black-hole a direct browser connection to
+        // googleapis.com while the dev server's egress is unaffected. The
+        // production build always connects directly (see RealtimeClient).
+        '/live-ws': {
+          target: 'https://generativelanguage.googleapis.com',
+          changeOrigin: true,
+          ws: true,
+          rewrite: (p) => p.replace(/^\/live-ws/, ''),
+        },
+      },
     },
   }
 })
