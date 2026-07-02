@@ -154,6 +154,20 @@ derived-only and cannot be spoofed by stored data). The schema
 only file allowed to. Future per-asset vision, board navigation, and
 annotation tools address the board through this layer.
 
+### `look_at_item` (per-item vision)
+
+`{ target }`. Returns ONE board item as an image at full sharpness: for
+images/screenshots, the ORIGINAL stored bytes from the file store (the canvas
+displays a scaled copy; the original survives at full resolution) — for other
+elements, a crisp single-element export. Targets resolve via
+`inventory/resolveTarget.ts`: `"selected"` → the live selection, then exact
+label, label/host substring, then a unique kind word ("screenshot", "image",
+"document"); ambiguity returns candidates instead of guessing. Results are
+budget-capped (~1MB data URL, JPEG-downscaled only when over), so a busy board
+never endangers the channel. This is the "close-up" rung of the perception
+ladder: read_canvas = index, capture_canvas = layout, look_at_item = read one
+thing (LL-011).
+
 ### `clear_canvas` (full wipe, confirmed)
 
 `{ confirmed?, restore? }`. Removes **everything** — the diagram, sticky notes,

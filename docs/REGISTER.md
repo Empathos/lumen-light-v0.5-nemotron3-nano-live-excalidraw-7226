@@ -18,6 +18,8 @@ Backfilled 2026-07-02 from the sessions of 2026-06-27 → 2026-07-02.
 | LL-008 | Markdown session export artifact | LL-002 | built | | [sessionExport](../src/sessionExport.ts) | leave-with artifact from inventory + transcript (commit 71088ff) |
 | LL-009 | Offline browser smoke harness | — | built | | [TESTING](TESTING.md) | theme: Quality; npm run smoke:offline gates typed canvas loop (commit 225eb9f) |
 | LL-010 | Selection and viewport as focus | IDEA-007 | built | ++++ | [summarizeScene](../src/canvas/summarizeScene.ts) | U: "this one" resolves; C: appState read; X: bytes; M: deterministic — live voice check pending (provider silent 14:00+) |
+| LL-011 | Look closely at one item | IDEA-003 | built | +++0 | [zoomItem](../src/canvas/zoomItem.ts) | returns ORIGINAL image bytes (canvas shows shrunk copy); resolver precedence selection>label>kind; M: live voice check pending |
+| RISK-003 | Some sites block thum.io capture | LL-007 | concept | | [KNOWN_ISSUES](KNOWN_ISSUES.md) | observed live 2026-07-02: MSN retry + Heidelberg tourism refused; Wikipedia fine |
 | RISK-001 | Big payloads kill voice channel | — | concept | | [ADR-0011](decisions/ADR-0011-visual-grounding-on-resume.md) | theme: Physics; X player defects ≥ ~256KB per message |
 | RISK-002 | Storage quota silently stops persistence | — | concept | | [ADR-0012](decisions/ADR-0012-canvas-agnostic-inventory.md) | theme: Persistence; screenshot images are megabytes; quota ~5MB; saveScene swallows failure |
 | GAP-002 | Surface and survive storage-quota failures | RISK-002 | built | ++0+ | [persistence](../src/canvas/persistence.ts), [test](../src/canvas/persistence.test.ts) | warns on failed save; falls back to slim scene without files |
@@ -29,7 +31,7 @@ Backfilled 2026-07-02 from the sessions of 2026-06-27 → 2026-07-02.
 |----|-----------------|------|--------|------|-------|------|
 | IDEA-001 | Full-res vision by URL reference | RISK-001 | idea | ++-? | | X: − on current router (GAP-001); revives via IDEA-008 or IDEA-009 |
 | IDEA-002 | Cheap fixed-size whole-board overview | RISK-001 | idea | ++0? | | U: Waldo queries; C: export scaling exists; M: legibility at 768px unverified |
-| IDEA-003 | Per-asset zoom by node id | IDEA-001 | idea | +++0 | | viable WITHOUT URLs: one asset as bounded data URL fits the channel |
+| IDEA-003 | Per-asset zoom by node id | IDEA-001 | superseded | +++0 | | graduated to LL-011 |
 | IDEA-004 | Take-me-to board navigation | LL-005 | idea | +++0 | | U: conversational navigation; C: one scrollToContent call; X: bytes; M: label matching may miss |
 | IDEA-005 | Model annotates items with tags | LL-005 | idea | 0+0? | | C: write path exists; U: unclear until retrieval consumes tags; M: tagging quality unknown |
 | IDEA-006 | Save board to Excalidraw library | LL-004 | idea | | | visible stash before clear; binary round-trip unverified |
