@@ -338,6 +338,7 @@ export function App() {
     w.__lumenInjectImage = (url: string, text?: string) =>
       clientRef.current?.injectImage(url, text) ?? false
     w.__lumenLookAt = (target: string) => lookAtItemFromArgs({ target })
+    w.__lumenTelemetry = () => clientRef.current?.telemetryDump()
     // IDEA-007: select an element programmatically (live focus testing).
     w.__lumenSelect = (id: string) =>
       apiRef.current?.updateScene({ appState: { selectedElementIds: { [id]: true } } })

@@ -271,3 +271,20 @@ On the deployed site (same browser profile as the PWA), run in the console:
    already drops rather than kills.)
 3. Inworld-side turn management after image items — needs more live sessions
    to characterize.
+
+### Telemetry findings (2026-07-02, instrumented live session)
+- A 166K-char image message takes **~2.1s to drain** through the data channel.
+- Audio **jitter jumps ~6x** (0.005 → 0.031) around the send and stays mildly
+  elevated — that is the audible blip: bandwidth contention on the shared peer
+  connection, NOT packet loss (0 lost) and NOT provider errors (none received).
+- With the new **backpressure guard** (image fully drains before
+  `response.create` is sent), the test session had zero stall and the model
+  read the seeded headline exactly.
+- Instrumentation is permanent: `window.__lumenTelemetry()` dumps send sizes,
+  drain times, every server event type (including unhandled ones), errors
+  verbatim, and 2s-interval audio stats.
+- Note: buffered pre-reads (LL-012) answer most image questions from text, so
+  the heavy look path — and with it the blip — should become rare in practice.
+- Minor tic observed twice: the model answers correctly, then says "oh wait,
+  my mistake" and repeats the same correct answer — likely over-triggering of
+  the anti-confabulation instruction; cosmetic, watching.

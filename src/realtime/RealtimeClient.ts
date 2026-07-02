@@ -62,6 +62,17 @@ export class RealtimeClient {
   // rather than the default persona. Guarded so it can never block connect.
   private pendingGrounding?: string
   private groundingSent = false
+  // Telemetry (BUG-005): everything needed to see what large image messages do
+  // to the session — send sizes/backpressure, every event type received (incl.
+  // ones we don't handle), errors verbatim, and periodic audio stats.
+  private tm = {
+    sends: [] as { t: number; type: string; size: number; buffered: number }[],
+    events: {} as Record<string, number>,
+    lastEvents: [] as { t: number; type: string; raw: string }[],
+    errors: [] as { t: number; raw: string }[],
+    stats: [] as Record<string, unknown>[],
+  }
+  private statsTimer?: ReturnType<typeof setInterval>
 
   constructor(private readonly callbacks: RealtimeCallbacks = {}) {}
 
@@ -159,6 +170,7 @@ export class RealtimeClient {
         }
         // Mark connected BEFORE any grounding work so the session is always usable.
         this.setStatus('connected')
+        this.startStatsSampler()
         // Fallback in case session.updated never arrives: inject anyway shortly.
         setTimeout(() => void this.flushGrounding(), 1500)
       })
@@ -232,14 +244,68 @@ export class RealtimeClient {
     return true
   }
 
+  private startStatsSampler() {
+    clearInterval(this.statsTimer)
+    this.statsTimer = setInterval(() => {
+      void this.pc?.getStats().then((report) => {
+        const snap: Record<string, unknown> = { t: Date.now() }
+        report.forEach((s) => {
+          if (s.type === 'inbound-rtp' && s.kind === 'audio') {
+            snap.inPacketsLost = s.packetsLost
+            snap.inJitter = s.jitter
+          }
+          if (s.type === 'outbound-rtp' && s.kind === 'audio') snap.outPackets = s.packetsSent
+          if (s.type === 'data-channel') {
+            snap.dcSent = s.bytesSent
+            snap.dcReceived = s.bytesReceived
+          }
+        })
+        this.tm.stats.push(snap)
+        if (this.tm.stats.length > 120) this.tm.stats.shift()
+      })
+    }, 2000)
+  }
+
   disconnect(): void {
+    clearInterval(this.statsTimer)
     this.cleanup()
     this.setStatus('closed')
   }
 
   private send(event: Record<string, unknown>) {
     if (this.dc && this.dc.readyState === 'open') {
-      this.dc.send(JSON.stringify(event))
+      const payload = JSON.stringify(event)
+      this.tm.sends.push({
+        t: Date.now(),
+        type: String(event.type),
+        size: payload.length,
+        buffered: this.dc.bufferedAmount,
+      })
+      if (this.tm.sends.length > 200) this.tm.sends.shift()
+      if (payload.length > 65_536) {
+        console.warn('[lumen telemetry] large send', payload.length, 'buffered before:', this.dc.bufferedAmount)
+      }
+      this.dc.send(payload)
+    }
+  }
+
+  /** Wait for the data channel's send buffer to drain (backpressure guard). */
+  private async drainChannel(maxMs = 4000): Promise<number> {
+    const start = Date.now()
+    while (this.dc && this.dc.bufferedAmount > 0 && Date.now() - start < maxMs) {
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    return Date.now() - start
+  }
+
+  /** Full telemetry snapshot — sizes, event counts, errors, audio stats. */
+  telemetryDump(): Record<string, unknown> {
+    return {
+      sends: this.tm.sends.slice(-40),
+      eventCounts: this.tm.events,
+      lastEvents: this.tm.lastEvents.slice(-25),
+      errors: this.tm.errors.slice(-10),
+      audioStats: this.tm.stats.slice(-12),
     }
   }
 
@@ -280,6 +346,18 @@ export class RealtimeClient {
       event = JSON.parse(raw) as RealtimeServerEvent
     } catch {
       return
+    }
+
+    // Telemetry: count all event types; keep a raw ring of recent non-audio
+    // events; errors and rate/limit/fail-ish events are kept verbatim.
+    this.tm.events[event.type] = (this.tm.events[event.type] ?? 0) + 1
+    if (!event.type.includes('delta') && !event.type.includes('backchannel')) {
+      this.tm.lastEvents.push({ t: Date.now(), type: event.type, raw: raw.slice(0, 400) })
+      if (this.tm.lastEvents.length > 60) this.tm.lastEvents.shift()
+    }
+    if (/error|limit|exceed|fail|cancel/i.test(event.type) || event.error) {
+      this.tm.errors.push({ t: Date.now(), raw: raw.slice(0, 600) })
+      console.warn('[lumen telemetry] error-ish event:', raw.slice(0, 300))
     }
 
     if (event.type === 'session.updated') {
@@ -369,6 +447,10 @@ export class RealtimeClient {
       })
     }
     if (image) {
+      // Backpressure guard (BUG-005): let the channel drain before and after
+      // the large image message, so it never competes with live audio or gets
+      // queued behind/ahead of the response request.
+      const preDrain = await this.drainChannel()
       this.send({
         type: 'conversation.item.create',
         item: {
@@ -383,6 +465,8 @@ export class RealtimeClient {
           ],
         },
       })
+      const postDrain = await this.drainChannel(8000)
+      console.info('[lumen telemetry] image send drain ms — before:', preDrain, 'after:', postDrain)
     }
 
     this.send({ type: 'response.create' })
