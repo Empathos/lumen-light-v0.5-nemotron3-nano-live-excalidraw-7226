@@ -20,6 +20,7 @@ import {
   rehydrateDocument,
 } from './canvas/docWindow'
 import { snapshotBeforeClear, wipeBoard, restoreLastClear } from './canvas/clearScene'
+import { lookAtItem } from './canvas/zoomItem'
 import { ConversationPanel } from './ui/ConversationPanel'
 import { MockAssistantProvider } from './assistant/mockProvider'
 import { RealtimeClient, type RealtimeStatus } from './realtime/RealtimeClient'
@@ -277,6 +278,15 @@ export function App() {
     downloadMarkdownExport(buildSessionExport({ inventory, transcript: messages }))
   }, [messages])
 
+  const lookAtItemFromArgs = useCallback(async (args: unknown) => {
+    const api = apiRef.current
+    if (!api) return { ok: false, error: 'canvas not ready' }
+    const a = (args ?? {}) as Record<string, unknown>
+    const target = typeof a.target === 'string' ? a.target : ''
+    if (!target.trim()) return { ok: false, error: 'missing target' }
+    return lookAtItem(api, target)
+  }, [])
+
   const clearCanvas = useCallback((args: unknown) => {
     const api = apiRef.current
     if (!api) return { ok: false, error: 'canvas not ready' }
@@ -324,6 +334,7 @@ export function App() {
     // GAP-001 spike: does Inworld accept a REMOTE image_url? Needs a live session.
     w.__lumenInjectImage = (url: string, text?: string) =>
       clientRef.current?.injectImage(url, text) ?? false
+    w.__lumenLookAt = (target: string) => lookAtItemFromArgs({ target })
     // IDEA-007: select an element programmatically (live focus testing).
     w.__lumenSelect = (id: string) =>
       apiRef.current?.updateScene({ appState: { selectedElementIds: { [id]: true } } })
@@ -347,6 +358,7 @@ export function App() {
     drawCanvasFromArgs,
     captureCanvas,
     readCanvas,
+    lookAtItemFromArgs,
     clearCanvas,
     generateImageFromArgs,
     openDocumentFromArgs,
@@ -377,6 +389,7 @@ export function App() {
         if (name === 'draw_flow') return drawFlowFromArgs(args)
         if (name === 'capture_canvas') return captureCanvas()
         if (name === 'read_canvas') return readCanvas()
+        if (name === 'look_at_item') return lookAtItemFromArgs(args)
         if (name === 'clear_canvas') return clearCanvas(args)
         if (name === 'generate_image') return generateImageFromArgs(args)
         if (name === 'open_document') return openDocumentFromArgs(args)
@@ -394,6 +407,7 @@ export function App() {
     addMessage,
     captureCanvas,
     readCanvas,
+    lookAtItemFromArgs,
     clearCanvas,
     drawCanvasFromArgs,
     drawFlowFromArgs,

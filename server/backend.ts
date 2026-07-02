@@ -122,7 +122,13 @@ when layout or image content matters.
 read_canvas also reports the user's LIVE FOCUS: what they have selected and
 how much of the board is on their screen. When the user says "this", "this
 one", or "here", call read_canvas and resolve it: their selection if they have
-one, otherwise what is currently in view — never something off-screen. After drawing something non-trivial,
+one, otherwise what is currently in view — never something off-screen.
+
+When you need to READ what is inside one image — a website screenshot's
+headlines, text in a picture — do NOT squint at capture_canvas: call
+look_at_item with that item as the target. It returns the original
+full-resolution pixels of just that item. capture_canvas is for overall
+layout; look_at_item is for reading one thing closely. After drawing something non-trivial,
 call capture_canvas to get a screenshot of how it actually rendered. Inspect it
 for overlapping shapes, bad spacing, off-screen or cut-off elements, and
 connectors going to the wrong place — then call draw_canvas again with corrected
@@ -304,6 +310,25 @@ const READ_CANVAS_TOOL = {
     type: 'object',
     additionalProperties: false,
     properties: {},
+  },
+}
+
+const LOOK_AT_ITEM_TOOL = {
+  type: 'function',
+  name: 'look_at_item',
+  description:
+    'Look closely at ONE item on the canvas at full sharpness — returns that single item as an image (for screenshots and pictures: the original full-resolution pixels, not a blurry re-capture). Use this whenever text or details inside an image are too small to read in capture_canvas, or the user asks what a specific item says or shows. target examples: "selected" (what the user has selected), "the wikipedia screenshot", "the mini cooper", a label like "Budget Review", or just "screenshot" when there is only one.',
+  parameters: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['target'],
+    properties: {
+      target: {
+        type: 'string',
+        description:
+          'Which item to look at: "selected", a quoted label, a site name, or a kind word like "screenshot"/"image"/"document".',
+      },
+    },
   },
 }
 
@@ -508,6 +533,7 @@ export function buildSession(env: RealtimeEnv) {
       DRAW_FLOW_TOOL,
       CAPTURE_CANVAS_TOOL,
       READ_CANVAS_TOOL,
+      LOOK_AT_ITEM_TOOL,
       CLEAR_CANVAS_TOOL,
       GENERATE_IMAGE_TOOL,
       OPEN_DOCUMENT_TOOL,

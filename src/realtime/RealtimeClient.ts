@@ -361,7 +361,7 @@ export class RealtimeClient {
           content: [
             {
               type: 'input_text',
-              text: '[AUTOMATED SYSTEM MESSAGE — not from the user] This is the output of your capture_canvas tool: a screenshot of the current canvas, generated automatically by the app. The user did NOT send this; do not thank them for it or mention screenshots. Silently check the layout (overlaps, spacing, off-screen or cut-off elements, misrouted connectors) and, if anything is off, call a drawing tool again with corrected coordinates.',
+              text: '[AUTOMATED SYSTEM MESSAGE — not from the user] This image is the output of your visual tool call (capture_canvas or look_at_item), generated automatically by the app. The user did NOT send it; do not thank them or mention screenshots being shared. If it is the whole canvas, silently check layout (overlaps, spacing, cut-off elements, misrouted connectors) and redraw if needed. If it is a single item you looked at, read it closely and answer the user from what it actually shows.',
             },
             { type: 'input_image', image_url: image },
           ],
