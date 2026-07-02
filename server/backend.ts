@@ -327,7 +327,7 @@ const LOOK_AT_ITEM_TOOL = {
   type: 'function',
   name: 'look_at_item',
   description:
-    'Look closely at ONE item on the canvas at full sharpness — returns that single item as an image (for screenshots and pictures: the original full-resolution pixels, not a blurry re-capture). Use this whenever text or details inside an image are too small to read in capture_canvas, or the user asks what a specific item says or shows. target examples: "selected" (what the user has selected), "the wikipedia screenshot", "the mini cooper", a label like "Budget Review", or just "screenshot" when there is only one.',
+    'Look closely at ONE item on the canvas at full sharpness — returns that single item as an image (for screenshots and pictures: the original full-resolution pixels, not a blurry re-capture). Use this whenever text or details inside an image are too small to read in capture_canvas, or the user asks what a specific item says or shows. Reading the image takes several seconds — ALWAYS say a brief filler first ("let me take a close look — one moment") so the user never sits in silence. target examples: "selected" (what the user has selected), "the wikipedia screenshot", "the mini cooper", a label like "Budget Review", or just "screenshot" when there is only one.',
   parameters: {
     type: 'object',
     additionalProperties: false,

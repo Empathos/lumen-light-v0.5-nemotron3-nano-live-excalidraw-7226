@@ -9,6 +9,7 @@ index) as a record. Fixes should reference the bug id in the commit message.
 | [BUG-002](#bug-002) | Assistant can't check what's on the canvas mid-session (stale picture) | High | ✅ Resolved |
 | [BUG-003](#bug-003) | Assistant can't clear the canvas ("clear everything" does nothing) | High | ✅ Resolved |
 | [BUG-004](#bug-004) | Assistant calls a visibly populated board "blank" after app restart | High | ✅ Resolved |
+| [BUG-005](#bug-005) | Silences around look_at_item; session may stall after | Medium | 🔍 Investigating (mitigated) |
 
 ---
 
@@ -248,3 +249,25 @@ never again summarize to "empty". Locked by a test.
 On the deployed site (same browser profile as the PWA), run in the console:
 `JSON.parse(localStorage.getItem('lumen-scene-v1')).elements.map(e => e.type)`
 — if the types are mostly `freedraw`/`line`, the hypothesis is confirmed.
+
+---
+
+## BUG-005
+
+**Long silences around look_at_item; session may stop responding after**
+
+- **Severity:** Medium (capability works — she read the real date — but dead
+  air makes it feel broken, and one session went quiet afterwards)
+- **Status:** 🔍 Investigating — mitigations shipped 2026-07-02 (filler-first
+  instruction; image budget 250K→180K chars for channel headroom)
+- **Reported:** 2026-07-02 (live session; user asked twice during the silence)
+
+### Hypotheses
+1. Vision generation latency: the Google-backed router takes many seconds on a
+   1400px image; nothing tells the user to wait. (Mitigated: instruction now
+   requires a spoken filler before looking.)
+2. Channel strain from ~225K-char messages degrading the session afterwards
+   (RISK-001 family). (Mitigated: budget lowered to 180K; oversized guard
+   already drops rather than kills.)
+3. Inworld-side turn management after image items — needs more live sessions
+   to characterize.

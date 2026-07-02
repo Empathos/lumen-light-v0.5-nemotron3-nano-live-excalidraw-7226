@@ -18,8 +18,9 @@ import { truncate, hostOf } from '../lib/text'
 
 // The WebRTC data channel rejects large messages (~256KB typical ceiling —
 // RISK-001; verified live: a 609K-char data URL silenced the session). Budget
-// well under it: ~250K chars ≈ ~190KB binary. JPEG keeps screenshots legible.
-const MAX_DATAURL_CHARS = 250_000
+// well under it: ~180K chars ≈ ~135KB binary — verified legible (read a real
+// Wikipedia date at 225K; extra headroom cuts channel strain and read latency).
+const MAX_DATAURL_CHARS = 180_000
 const MAX_EDGE = 1400
 
 function describeNode(kind: string, label?: string): string {
