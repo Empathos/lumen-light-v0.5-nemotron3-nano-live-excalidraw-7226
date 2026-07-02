@@ -35,6 +35,7 @@ Backfilled 2026-07-02 from the sessions of 2026-06-27 → 2026-07-02.
 | IDEA-004 | Take-me-to board navigation | LL-005 | idea | +++0 | | U: conversational navigation; C: one scrollToContent call; X: bytes; M: label matching may miss |
 | IDEA-005 | Model annotates items with tags | LL-005 | idea | 0+0? | | C: write path exists; U: unclear until retrieval consumes tags; M: tagging quality unknown |
 | IDEA-006 | Save board to Excalidraw library | LL-004 | idea | | | visible stash before clear; binary round-trip unverified |
+| IDEA-010 | Pre-read images at placement | LL-011 | idea | | | buffered vision: background describe+OCR when image lands, stored as ai.* tags; answers become instant text |
 | IDEA-008 | Host canvas images on GCS | GAP-001 | idea | | | gs:// URIs are the sanctioned Google path |
 | IDEA-009 | Non-Google router model for vision | GAP-001 | idea | | | the http(s) refusal is Google-specific per the error |
 | IDEA-007 | Selection and viewport as focus | LL-005 | superseded | ++++ | | graduated to LL-010 |
